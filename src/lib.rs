@@ -1,12 +1,14 @@
-// #![forbid(unsafe_code, future_incompatible)]
-// #![deny(
-//     missing_debug_implementations,
-//     nonstandard_style,
-//     missing_docs,
-//     unreachable_pub,
-//     missing_copy_implementations,
-//     unused_qualifications
-// )]
+//! OpenID Connect-based authentication middleware for Tide.
+
+#![forbid(unsafe_code, future_incompatible)]
+#![deny(
+    missing_debug_implementations,
+    nonstandard_style,
+    missing_docs,
+    unreachable_pub,
+    missing_copy_implementations,
+    unused_qualifications
+)]
 
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
@@ -26,8 +28,8 @@ const USERID_SESSION_KEY: &str = "tide.openidconnect.userid";
 
 #[derive(Debug, Deserialize)]
 struct OpenIdCallback {
-    pub code: AuthorizationCode,
-    pub state: String,
+    code: AuthorizationCode,
+    state: String,
 }
 
 struct OpenIdConnectRequestExtData {
@@ -35,8 +37,14 @@ struct OpenIdConnectRequestExtData {
     user_id: String,
 }
 
+/// Provides access to request-level OpenID Connect authorization data.
 pub trait OpenIdConnectRequestExt {
+    /// Returns `true` if the request has been authenticated, `false`
+    /// otherwise.
     fn is_authenticated(&self) -> bool;
+
+    /// Gets the provider-specific user id of the authenticated user, if
+    /// this request has been authenticated.
     fn user_id(&self) -> &str;
 }
 
@@ -64,21 +72,35 @@ where
 /// ... add docs ...
 ///
 /// ## Example
-/// ```rust
-/// use tide_csrf::{self, CsrfRequestExt};
+/// ```no_run
+/// use tide_openidconnect::{self, OpenIdConnectRequestExt};
 ///
 /// # async_std::task::block_on(async {
 /// let mut app = tide::new();
 ///
-/// app.with(tide_csrf::CsrfMiddleware::new(
-///     b"we recommend you use std::env::var(\"TIDE_SECRET\").unwrap().as_bytes() instead of a fixed value"
+/// // OpenID Connect middleware *requires* session storage.
+/// app.with(tide::sessions::SessionMiddleware::new(
+///     tide::sessions::MemoryStore::new(),
+///     b"don't actually use a hardcoded secret",
 /// ));
+///
+/// // Initialize the OpenID Connect middleware; normally all of these
+/// // configuration values would come from an environment-specific config
+/// // file.
+/// app.with(
+///     tide_openidconnect::OpenIdConnectMiddleware::new(
+///         tide_openidconnect::IssuerUrl::new("https://your-tenant-name.us.auth0.com/".to_string()).unwrap(),
+///         tide_openidconnect::ClientId::new("app-id-goes-here".to_string()),
+///         tide_openidconnect::ClientSecret::new("app-secret-goes-here".to_string()),
+///         tide_openidconnect::RedirectUrl::new("http://your.cool.site/callback".to_string()).unwrap(),
+///     )
+///     .await,
+/// );
 ///
 /// app.at("/").get(|req: tide::Request<()>| async move {
 ///     Ok(format!(
-///         "CSRF token is {}; you should put that in header {}",
-///         req.csrf_token(),
-///         req.csrf_header_name()
+///         "If you got this far, then the user is authenticated, and their user id is {}",
+///         req.user_id()
 ///     ))
 /// });
 ///
@@ -103,6 +125,14 @@ impl std::fmt::Debug for OpenIdConnectMiddleware {
 }
 
 impl OpenIdConnectMiddleware {
+    /// Creates a new OpenIdConnectMiddleware with a mandatory Issuer URL,
+    /// Client Id, Client Secret, and Redirect URL.
+    ///
+    /// # Defaults
+    ///
+    /// The defaults for OpenIdConnectMiddleware are:
+    /// - login path: "/login"
+    /// - landing path: "/"
     pub async fn new(
         issuer_url: IssuerUrl,
         client_id: ClientId,
