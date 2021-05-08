@@ -16,15 +16,13 @@ use openidconnect::{
     AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce, OAuth2TokenResponse,
 };
 use serde::Deserialize;
-use tide::{
-    http::cookies::SameSite,
-    http::{Cookie, Method},
-    Middleware, Next, Redirect, Request, Response, StatusCode,
-};
+use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
 
-const USERID_SESSION_KEY: &str = "tide.openidconnect.userid";
+const CSRF_SESSION_KEY: &str = "tide.oidc.preauth-csrf";
+const NONCE_SESSION_KEY: &str = "tide.oidc.preauth-nonce";
+const USERID_SESSION_KEY: &str = "tide.oidc.userid";
 
 #[derive(Debug, Deserialize)]
 struct OpenIdCallback {
@@ -175,7 +173,7 @@ impl OpenIdConnectMiddleware {
         self
     }
 
-    async fn generate_redirect<State>(&self, req: Request<State>) -> tide::Result
+    async fn generate_redirect<State>(&self, mut req: Request<State>) -> tide::Result
     where
         State: Clone + Send + Sync + 'static,
     {
@@ -191,49 +189,31 @@ impl OpenIdConnectMiddleware {
             // .add_scope(Scope::new("profile".to_string()))
             .url();
 
-        let mut response = Response::builder(StatusCode::Found)
-            .header(tide::http::headers::LOCATION, authorize_url.to_string())
-            .build();
+        req.session_mut()
+            .insert(CSRF_SESSION_KEY, csrf_state)
+            .unwrap();
+        req.session_mut().insert(NONCE_SESSION_KEY, nonce).unwrap();
 
-        // TODO These cookies may not work in all cases (if you navigate
-        // directly to the site) given that they are trying to set a path
-        // of `/`, but the URLs are located below that... Need to see what
-        // the Auth0 Express.js thing does with these cookies.
-        // TODO Is it that we want SameSite::Lax instead of Strict? I think
-        // that is the case... (but let's test/confirm)
-        let openid_csrf_cookie = Cookie::build("tide.openid_csrf", csrf_state.secret().clone())
-            .http_only(true)
-            .same_site(SameSite::Strict)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
-        response.insert_cookie(openid_csrf_cookie);
-
-        let openid_nonce_cookie = Cookie::build("tide.openid_nonce", nonce.secret().clone())
-            .http_only(true)
-            .same_site(SameSite::Strict)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
-        response.insert_cookie(openid_nonce_cookie);
-
-        Ok(response)
+        Ok(Redirect::new(&authorize_url).into())
     }
 
     async fn handle_callback<State>(&self, mut req: Request<State>) -> tide::Result
     where
         State: Clone + Send + Sync + 'static,
     {
-        // Get the auth CSRF and Nonce values from the cookies.
-        let _openid_csrf_cookie = req.cookie("tide.openid_csrf").unwrap();
-
-        let openid_nonce_cookie = req.cookie("tide.openid_nonce").unwrap();
-        let nonce = Nonce::new(openid_nonce_cookie.value().to_string());
+        // Get the CSRF and Nonce values from the session state.
+        let csrf_state: CsrfToken = req.session().get(CSRF_SESSION_KEY).unwrap();
+        let nonce: Nonce = req.session().get(NONCE_SESSION_KEY).unwrap();
 
         // Extract the OpenID callback information and verify the CSRF
-        // cookie.
+        // state.
         let callback_data: OpenIdCallback = req.query()?;
-        // TODO Verify state against `tide.openid_csrf` cookie.
+        if &callback_data.state != csrf_state.secret() {
+            return Err(tide::http::Error::from_str(
+                StatusCode::Unauthorized,
+                "Invalid CSRF state.",
+            ));
+        }
 
         // Exchange the code for a token.
         // TODO Needs to use an async HTTP client, which means we need to
@@ -258,33 +238,15 @@ impl OpenIdConnectMiddleware {
         println!("User id: {}", claims.subject().as_str());
 
         // Add the user id to the session state in order to mark this
-        // session as authenticated.
+        // session as authenticated. Remove the pre-auth session keys.
+        req.session_mut().remove(CSRF_SESSION_KEY);
+        req.session_mut().remove(NONCE_SESSION_KEY);
         req.session_mut()
             .insert(USERID_SESSION_KEY, claims.subject().as_str())
             .unwrap();
 
         // The user has logged in; redirect them to the main site.
-        let mut response = Response::builder(StatusCode::Found)
-            .header(tide::http::headers::LOCATION, &self.landing_path)
-            .build();
-
-        let openid_csrf_cookie = Cookie::build("tide.openid_csrf", "")
-            .http_only(true)
-            .same_site(SameSite::Strict)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
-        response.remove_cookie(openid_csrf_cookie);
-
-        let openid_nonce_cookie = Cookie::build("tide.openid_nonce", "")
-            .http_only(true)
-            .same_site(SameSite::Strict)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
-        response.remove_cookie(openid_nonce_cookie);
-
-        Ok(response)
+        Ok(Redirect::new(&self.landing_path).into())
     }
 }
 
