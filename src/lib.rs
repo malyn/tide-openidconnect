@@ -17,10 +17,12 @@ use serde::Deserialize;
 use tide::{
     http::cookies::SameSite,
     http::{Cookie, Method},
-    Middleware, Next, Request, Response, StatusCode,
+    Middleware, Next, Redirect, Request, Response, StatusCode,
 };
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
+
+const USERID_SESSION_KEY: &str = "tide.openidconnect.userid";
 
 #[derive(Debug, Deserialize)]
 struct OpenIdCallback {
@@ -188,7 +190,7 @@ impl OpenIdConnectMiddleware {
         Ok(response)
     }
 
-    async fn handle_callback<State>(&self, req: Request<State>) -> tide::Result
+    async fn handle_callback<State>(&self, mut req: Request<State>) -> tide::Result
     where
         State: Clone + Send + Sync + 'static,
     {
@@ -225,6 +227,12 @@ impl OpenIdConnectMiddleware {
         println!("ID token: {:?}", claims);
         println!("User id: {}", claims.subject().as_str());
 
+        // Add the user id to the session state in order to mark this
+        // session as authenticated.
+        req.session_mut()
+            .insert(USERID_SESSION_KEY, claims.subject().as_str())
+            .unwrap();
+
         // The user has logged in; redirect them to the main site.
         let mut response = Response::builder(StatusCode::Found)
             .header(tide::http::headers::LOCATION, &self.landing_path)
@@ -255,7 +263,7 @@ impl<State> Middleware<State> for OpenIdConnectMiddleware
 where
     State: Clone + Send + Sync + 'static,
 {
-    async fn handle(&self, req: Request<State>, next: Next<'_, State>) -> tide::Result {
+    async fn handle(&self, mut req: Request<State>, next: Next<'_, State>) -> tide::Result {
         // Is this URL one of the URLs that we need to intercept as part
         // of the OpenID Connect auth process? If so, apply the appropriate
         // part of the auth process according to the URL. If not, verify
@@ -269,16 +277,27 @@ where
         {
             self.handle_callback(req).await
         } else {
-            // TODO Need a check to see if we are authenticated (req.session() has our data).
+            // See if we are authenticated (the session has our OpenID
+            // Connect user id) and allow the request if so, otherwise
+            // redirect the user to the login page.
+            if let Some(user_id) = req.session().get::<String>(USERID_SESSION_KEY) {
+                // Request is authenticated; add our extension data to the
+                // request.
+                req.set_ext(OpenIdConnectRequestExtData {
+                    is_authenticated: true,
+                    user_id,
+                });
 
-            // Request is authenticated; add our extension data to the
-            // request.
+                // Call the downstream middleware.
+                let response = next.run(req).await;
 
-            // Call the downstream middleware.
-            let response = next.run(req).await;
-
-            // Return the response.
-            Ok(response)
+                // Return the response.
+                Ok(response)
+            } else {
+                // Request is *not* authenticated; redirect to the login
+                // endpoint.
+                Ok(Redirect::new(&self.login_path).into())
+            }
         }
     }
 }

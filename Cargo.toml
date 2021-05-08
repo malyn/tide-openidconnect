@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 openidconnect = "2.0.1"
 serde = "1.0.125"
-tide = { version = "0.16.0", default-features = false, features = ["cookies"] }
+tide = { version = "0.16.0", default-features = false, features = ["cookies", "sessions"] }
 
 [dev-dependencies]
 async-std = { version = "1.9.0", features = ["attributes"] }
