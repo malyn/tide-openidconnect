@@ -20,7 +20,7 @@ use tide::{
     http::cookies::SameSite,
     http::mime,
     http::{Cookie, Method},
-    Middleware, Next, Redirect, Request, Response, StatusCode,
+    Middleware, Next, Redirect, Request, Response, Route, StatusCode,
 };
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
@@ -37,37 +37,42 @@ struct OpenIdCallback {
 }
 
 struct OpenIdConnectRequestExtData {
-    is_authenticated: bool,
-    user_id: String,
+    login_path: String,
+    user_id: Option<String>,
 }
 
 /// Provides access to request-level OpenID Connect authorization data.
 pub trait OpenIdConnectRequestExt {
-    /// Returns `true` if the request has been authenticated, `false`
-    /// otherwise.
-    fn is_authenticated(&self) -> bool;
-
-    /// Gets the provider-specific user id of the authenticated user, if
-    /// this request has been authenticated.
-    fn user_id(&self) -> &str;
+    /// Gets the provider-specific user id of the authenticated user, or
+    /// None if the request has not been authenticated.
+    fn user_id(&self) -> Option<String>;
 }
 
 impl<State> OpenIdConnectRequestExt for Request<State>
 where
     State: Send + Sync + 'static,
 {
-    fn is_authenticated(&self) -> bool {
+    fn user_id(&self) -> Option<String> {
         let ext_data: &OpenIdConnectRequestExtData = self
             .ext()
             .expect("You must install OpenIdConnectMiddleware to access the Open ID request data.");
-        ext_data.is_authenticated
+        ext_data.user_id.clone()
     }
+}
 
-    fn user_id(&self) -> &str {
+trait OpenIdConnectRequestExtInternal {
+    fn login_path(&self) -> &str;
+}
+
+impl<State> OpenIdConnectRequestExtInternal for Request<State>
+where
+    State: Send + Sync + 'static,
+{
+    fn login_path(&self) -> &str {
         let ext_data: &OpenIdConnectRequestExtData = self
             .ext()
             .expect("You must install OpenIdConnectMiddleware to access the Open ID request data.");
-        &ext_data.user_id
+        &ext_data.login_path
     }
 }
 
@@ -316,28 +321,84 @@ where
         {
             self.handle_callback(req).await
         } else {
-            // See if we are authenticated (the session has our OpenID
-            // Connect user id) and allow the request if so, otherwise
-            // redirect the user to the login page.
-            if let Some(user_id) = req.session().get::<String>(USERID_SESSION_KEY) {
-                // Request is authenticated; add our extension data to the
-                // request.
-                req.set_ext(OpenIdConnectRequestExtData {
-                    is_authenticated: true,
-                    user_id,
-                });
+            // Augment the request with the authentication status, then
+            // forward the request on to the remainder of the middleware
+            // chain (which then has the option of using that status to
+            // accept/reject the request).
+            req.set_ext(OpenIdConnectRequestExtData {
+                login_path: self.login_path.clone(),
+                user_id: req.session().get::<String>(USERID_SESSION_KEY),
+            });
 
-                // Call the downstream middleware.
-                let response = next.run(req).await;
-
-                // Return the response.
-                Ok(response)
-            } else {
-                // Request is *not* authenticated; redirect to the login
-                // endpoint.
-                Ok(Redirect::new(&self.login_path).into())
-            }
+            // Call the downstream middleware.
+            Ok(next.run(req).await)
         }
+    }
+}
+
+struct MustAuthenticateMiddleware;
+
+#[tide::utils::async_trait]
+impl<State> Middleware<State> for MustAuthenticateMiddleware
+where
+    State: Clone + Send + Sync + 'static,
+{
+    async fn handle(&self, req: Request<State>, next: Next<'_, State>) -> tide::Result {
+        // Is the request authenticated? If so, forward the request to
+        // the next item in the middleware chain. Otherwise, redirect the
+        // browser to the login page.
+        if req.user_id().is_some() {
+            tide::log::debug!(
+                "Authenticated request; forwarding request to next item in middleware chain."
+            );
+            Ok(next.run(req).await)
+        } else {
+            tide::log::debug!("Unauthenticated request; redirecting browser to login page.");
+            // TODO: This is the only way to get an HTMX AJAX request to
+            // silently go through the auth process. That is because HTMX
+            // is (sometimes) doing a POST, which we are redirecting to
+            // the OpenID Connect provider, and thus requires that provider
+            // to expose the proper CORS headers. But it doesn't, so we
+            // get a CORS error. Using a client-side redirect (by way of
+            // the HX-Redirect header *and a 200 OK, not 302 Found* response),
+            // prevents the CORS check because the client is just navigating
+            // to another location on its own. Do we expose this kind of
+            // thing though? If so, it seems like the MustAuthenticateMiddleware
+            // would have to be actual, configurable middleware and then
+            // the request extension is just turning on/off the middleware
+            // for each route, instead of injecting a new instance as
+            // part of the route. Basically, `authenticated()` is just a
+            // helper that calls `.with(singleton_middleware)` for you.
+            // I am not sure if that is actually that great; seems like
+            // it is probably fine to say `.with(must_authenticate)` and
+            // you just instantiate the middleware yourself. Then we can
+            // offer all kinds of config, such as the Response to clone
+            // to actually perform the redirect (which defaults to 302 Found,
+            // but could just as easily be the HX-Redirect thing I do
+            // below).
+            // Ok(Response::builder(200)
+            //     .body("")
+            //     .content_type(mime::HTML)
+            //     .header("HX-Redirect", req.login_path())
+            //     .build())
+            Ok(Redirect::new(&req.login_path()).into())
+        }
+    }
+}
+
+/// Extends Tide's Route trait to add an `authenticated()` function, which
+/// can be used to require authentication on specific routes/HTTP methods.
+pub trait MustAuthenticateRouteExt {
+    /// Requires authentication on the subsequent portions of this route,
+    /// redirecting the browser to the login page if the request is not
+    /// authenticated.
+    fn authenticated(&mut self) -> &mut Self;
+}
+
+impl<'a, State: Clone + Send + Sync + 'static> MustAuthenticateRouteExt for Route<'a, State> {
+    fn authenticated(&mut self) -> &mut Self {
+        println!("authenticated() called on {}", self.path());
+        self.with(MustAuthenticateMiddleware {})
     }
 }
 
