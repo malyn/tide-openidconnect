@@ -199,29 +199,12 @@ impl OpenIdConnectMiddleware {
             .header(tide::http::headers::LOCATION, authorize_url.to_string())
             .build();
 
-        // Note that these cookies *must* use SameSite::Lax since the
-        // redirect from the auth provider will arrive as a GET request,
-        // and SameSite::Strict cookies, by definition, are not sent on
-        // a GET redirect from a third-party site. Normally that is what
-        // you want when implementing CSRF protection, just in case your
-        // GET requests mutate state (since many forms of CSRF protection
-        // will avoid validating GET requests), but here we know we will
-        // receive GET requests and so we need the cookies in order to
-        // actually implement the CSRF protection.
-        let openid_csrf_cookie = Cookie::build(CSRF_COOKIE_KEY, csrf_state.secret().clone())
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
+        let secure_cookie = req.url().scheme() == "https";
+
+        let openid_csrf_cookie = build_cookie(secure_cookie, CSRF_COOKIE_KEY, csrf_state.secret());
         response.insert_cookie(openid_csrf_cookie);
 
-        let openid_nonce_cookie = Cookie::build(NONCE_COOKIE_KEY, nonce.secret().clone())
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
+        let openid_nonce_cookie = build_cookie(secure_cookie, NONCE_COOKIE_KEY, nonce.secret());
         response.insert_cookie(openid_nonce_cookie);
 
         Ok(response)
@@ -302,20 +285,12 @@ impl OpenIdConnectMiddleware {
             .body(format!("<!DOCTYPE html><html><head><title>Login Successful</title><meta http-equiv=\"refresh\" content=\"0;URL='{0}'\" /></head><body></body></html>", self.landing_path))
             .build();
 
-        let openid_csrf_cookie = Cookie::build(CSRF_COOKIE_KEY, "")
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
+        let secure_cookie = req.url().scheme() == "https";
+
+        let openid_csrf_cookie = build_cookie(secure_cookie, CSRF_COOKIE_KEY, "");
         response.remove_cookie(openid_csrf_cookie);
 
-        let openid_nonce_cookie = Cookie::build(NONCE_COOKIE_KEY, "")
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .secure(req.url().scheme() == "https")
-            .finish();
+        let openid_nonce_cookie = build_cookie(secure_cookie, NONCE_COOKIE_KEY, "");
         response.remove_cookie(openid_nonce_cookie);
 
         Ok(response)
@@ -364,6 +339,24 @@ where
             }
         }
     }
+}
+
+fn build_cookie(secure: bool, name: &str, value: &str) -> Cookie<'static> {
+    // Note that these cookies *must* use SameSite::Lax since the
+    // redirect from the auth provider will arrive as a GET request,
+    // and SameSite::Strict cookies, by definition, are not sent on
+    // a GET redirect from a third-party site. Normally that is what
+    // you want when implementing CSRF protection, just in case your
+    // GET requests mutate state (since many forms of CSRF protection
+    // will avoid validating GET requests), but here we know we will
+    // receive GET requests and so we need the cookies in order to
+    // actually implement the CSRF protection.
+    Cookie::build(name.to_string(), value.to_string())
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .secure(secure)
+        .finish()
 }
 
 #[cfg(test)]
