@@ -10,6 +10,11 @@
     unused_qualifications
 )]
 
+pub mod redirect_strategy;
+
+use std::sync::Arc;
+
+use crate::redirect_strategy::{HttpRedirect, RedirectStrategy};
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
     reqwest::http_client,
@@ -36,12 +41,9 @@ struct OpenIdCallback {
     state: String,
 }
 
-type BuildRedirectResponse = fn(&str) -> Response;
-
 struct OpenIdConnectRequestExtData {
     user_id: Option<String>,
-    login_path: String,
-    build_redirect: BuildRedirectResponse,
+    redirect_strategy: Arc<dyn RedirectStrategy>,
 }
 
 /// Provides access to request-level OpenID Connect authorization data.
@@ -75,7 +77,7 @@ where
         let ext_data: &OpenIdConnectRequestExtData = self
             .ext()
             .expect("You must install OpenIdConnectMiddleware to access the Open ID request data.");
-        (ext_data.build_redirect)(&ext_data.login_path)
+        ext_data.redirect_strategy.redirect()
     }
 }
 
@@ -124,7 +126,7 @@ pub struct OpenIdConnectMiddleware {
     redirect_url: RedirectUrl,
     landing_path: String,
     client: CoreClient,
-    build_redirect_response: BuildRedirectResponse,
+    redirect_strategy: Arc<dyn RedirectStrategy>,
 }
 
 impl std::fmt::Debug for OpenIdConnectMiddleware {
@@ -161,12 +163,13 @@ impl OpenIdConnectMiddleware {
                 .set_redirect_uri(redirect_url.clone());
 
         // Initialize the middleware with our defaults.
+        let login_path = "/login".to_string();
         Self {
-            login_path: "/login".to_string(),
+            login_path: login_path.clone(),
             redirect_url,
             landing_path: "/".to_string(),
             client,
-            build_redirect_response,
+            redirect_strategy: Arc::new(HttpRedirect::new(login_path)),
         }
     }
 
@@ -192,13 +195,13 @@ impl OpenIdConnectMiddleware {
     /// Sets the function used to generate responses to unauthenticated
     /// requests.
     ///
-    /// Defaults to `build_redirect_response` which generates a "302 Found"
-    /// with a Location header pointing at the login path.
-    pub fn with_unauthed_redirect_strategy(
-        mut self,
-        build_redirect_response: BuildRedirectResponse,
-    ) -> Self {
-        self.build_redirect_response = build_redirect_response;
+    /// Defaults to building a "302 Found" response with a Location
+    /// header.
+    pub fn with_unauthenticated_redirect_strategy<R>(mut self, redirect_strategy: R) -> Self
+    where
+        R: RedirectStrategy + 'static,
+    {
+        self.redirect_strategy = Arc::new(redirect_strategy);
         self
     }
 
@@ -370,9 +373,8 @@ where
             // chain (which then has the option of using that status to
             // accept/reject the request.
             req.set_ext(OpenIdConnectRequestExtData {
-                login_path: self.login_path.clone(),
                 user_id: req.session().get::<String>(USERID_SESSION_KEY),
-                build_redirect: self.build_redirect_response,
+                redirect_strategy: self.redirect_strategy.clone(),
             });
 
             // Call the downstream middleware.
