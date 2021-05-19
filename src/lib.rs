@@ -22,17 +22,15 @@ use openidconnect::{
 };
 use serde::Deserialize;
 use tide::{
-    http::cookies::SameSite,
-    http::mime,
-    http::{Cookie, Method},
-    Middleware, Next, Redirect, Request, Response, Route, StatusCode,
+    http::mime, http::Method, Middleware, Next, Redirect, Request, Response, Route, StatusCode,
 };
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
 
-const CSRF_COOKIE_KEY: &str = "tide.oidc.csrf";
-const NONCE_COOKIE_KEY: &str = "tide.oidc.nonce";
-
+// TODO Consider a single `tide.oidc` key that has a struct with the
+// current auth state in there.
+const CSRF_SESSION_KEY: &str = "tide.oidc.preauth-csrf";
+const NONCE_SESSION_KEY: &str = "tide.oidc.preauth-nonce";
 const USERID_SESSION_KEY: &str = "tide.oidc.userid";
 
 #[derive(Debug, Deserialize)]
@@ -205,7 +203,7 @@ impl OpenIdConnectMiddleware {
         self
     }
 
-    async fn generate_redirect<State>(&self, req: Request<State>) -> tide::Result
+    async fn generate_redirect<State>(&self, mut req: Request<State>) -> tide::Result
     where
         State: Clone + Send + Sync + 'static,
     {
@@ -221,34 +219,24 @@ impl OpenIdConnectMiddleware {
             // .add_scope(Scope::new("profile".to_string()))
             .url();
 
-        let mut response = Response::builder(StatusCode::Found)
-            .header(tide::http::headers::LOCATION, authorize_url.to_string())
-            .build();
+        req.session_mut()
+            .insert(CSRF_SESSION_KEY, csrf_state)
+            .unwrap();
+        req.session_mut().insert(NONCE_SESSION_KEY, nonce).unwrap();
 
-        let secure_cookie = req.url().scheme() == "https";
-
-        let openid_csrf_cookie = build_cookie(secure_cookie, CSRF_COOKIE_KEY, csrf_state.secret());
-        response.insert_cookie(openid_csrf_cookie);
-
-        let openid_nonce_cookie = build_cookie(secure_cookie, NONCE_COOKIE_KEY, nonce.secret());
-        response.insert_cookie(openid_nonce_cookie);
-
-        Ok(response)
+        Ok(Redirect::new(&authorize_url).into())
     }
 
     async fn handle_callback<State>(&self, mut req: Request<State>) -> tide::Result
     where
         State: Clone + Send + Sync + 'static,
     {
-        // Get the auth CSRF and Nonce values from the cookies.
-        let openid_csrf_cookie = req.cookie(CSRF_COOKIE_KEY).unwrap();
-        let csrf_state = CsrfToken::new(openid_csrf_cookie.value().to_string());
-
-        let openid_nonce_cookie = req.cookie(NONCE_COOKIE_KEY).unwrap();
-        let nonce = Nonce::new(openid_nonce_cookie.value().to_string());
+        // Get the CSRF and Nonce values from the session state.
+        let csrf_state: CsrfToken = req.session().get(CSRF_SESSION_KEY).unwrap();
+        let nonce: Nonce = req.session().get(NONCE_SESSION_KEY).unwrap();
 
         // Extract the OpenID callback information and verify the CSRF
-        // cookie.
+        // state.
         let callback_data: OpenIdCallback = req.query()?;
         if &callback_data.state != csrf_state.secret() {
             return Err(tide::http::Error::from_str(
@@ -280,46 +268,15 @@ impl OpenIdConnectMiddleware {
         println!("User id: {}", claims.subject().as_str());
 
         // Add the user id to the session state in order to mark this
-        // session as authenticated.
+        // session as authenticated. Remove the pre-auth session keys.
+        req.session_mut().remove(CSRF_SESSION_KEY);
+        req.session_mut().remove(NONCE_SESSION_KEY);
         req.session_mut()
             .insert(USERID_SESSION_KEY, claims.subject().as_str())
             .unwrap();
 
-        // The user has logged in; redirect them to the main site using
-        // a *client-side* redirect. This is the only way to A) ensure
-        // that the (new, with this request!) session cookie has the
-        // "authenticated" state, and B) keep the session cookie as a
-        // SameSite::Strict cookie. Browsers will not preserve cookies
-        // across 302 Found redirects, so none of the cookies we set
-        // would be preserved if we did a standard redirect. Instead,
-        // our best option is to use an HTML/client-side redirect. Note
-        // that whatever session the user might have started with will
-        // be replaced by this session, since the session id cookie for
-        // that initial session was not preserved across all of the
-        // (auth) redirects.
-        // TODO Make this configurable; by default we do client-side redirects,
-        // but if the user switches their session to SameSite::Lax then
-        // they can use normal redirects (and thus retain a single session
-        // across auth, which would be the only reason to go with that
-        // approach; presumably because you have some state prior to the
-        // auth that you want to retain).
-        // TODO In addition, make the HTML response configurable so that
-        // sites could implement a prettier layout given that people will
-        // see this page for the briefest time.
-        let mut response = Response::builder(StatusCode::Ok)
-            .content_type(mime::HTML)
-            .body(format!("<!DOCTYPE html><html><head><title>Login Successful</title><meta http-equiv=\"refresh\" content=\"0;URL='{0}'\" /></head><body></body></html>", self.landing_path))
-            .build();
-
-        let secure_cookie = req.url().scheme() == "https";
-
-        let openid_csrf_cookie = build_cookie(secure_cookie, CSRF_COOKIE_KEY, "");
-        response.remove_cookie(openid_csrf_cookie);
-
-        let openid_nonce_cookie = build_cookie(secure_cookie, NONCE_COOKIE_KEY, "");
-        response.remove_cookie(openid_nonce_cookie);
-
-        Ok(response)
+        // The user has logged in; redirect them to the main site.
+        Ok(Redirect::new(&self.landing_path).into())
     }
 }
 
@@ -420,24 +377,6 @@ impl<'a, State: Clone + Send + Sync + 'static> OpenIdConnectRouteExt for Route<'
         println!("authenticated() called on {}", self.path());
         self.with(MustAuthenticateMiddleware {})
     }
-}
-
-fn build_cookie(secure: bool, name: &str, value: &str) -> Cookie<'static> {
-    // Note that these cookies *must* use SameSite::Lax since the
-    // redirect from the auth provider will arrive as a GET request,
-    // and SameSite::Strict cookies, by definition, are not sent on
-    // a GET redirect from a third-party site. Normally that is what
-    // you want when implementing CSRF protection, just in case your
-    // GET requests mutate state (since many forms of CSRF protection
-    // will avoid validating GET requests), but here we know we will
-    // receive GET requests and so we need the cookies in order to
-    // actually implement the CSRF protection.
-    Cookie::build(name.to_string(), value.to_string())
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .secure(secure)
-        .finish()
 }
 
 #[cfg(test)]
