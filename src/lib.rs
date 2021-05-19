@@ -21,9 +21,7 @@ use openidconnect::{
     AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce, OAuth2TokenResponse,
 };
 use serde::Deserialize;
-use tide::{
-    http::mime, http::Method, Middleware, Next, Redirect, Request, Response, Route, StatusCode,
-};
+use tide::{http::Method, Middleware, Next, Redirect, Request, Response, Route, StatusCode};
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
 
@@ -278,32 +276,6 @@ impl OpenIdConnectMiddleware {
         // The user has logged in; redirect them to the main site.
         Ok(Redirect::new(&self.landing_path).into())
     }
-}
-
-/// Builds a response that redirects the browser to the given path, using
-/// a 302 Found response and the Location header.
-pub fn build_redirect_response(path: &str) -> Response {
-    Redirect::new(path).into()
-}
-
-/// Builds a response that redirects the browser to the given path, using
-/// the HTMX HX-Redirect header (in a 200 OK, text/html response).
-pub fn build_htmx_redirect_response(path: &str) -> Response {
-    // This is the only way to get an HTMX AJAX request to
-    // silently go through the auth process. That is because HTMX
-    // is (sometimes) doing a POST, which we are redirecting to
-    // the OpenID Connect provider, and thus requires that provider
-    // to expose the proper CORS headers. But it doesn't, so we
-    // get a CORS error. Using a client-side redirect (by way of
-    // the HX-Redirect header *and a 200 OK, not 302 Found* response),
-    // prevents the CORS check because the client is just navigating
-    // to another location on its own.
-    // TODO Add the above to our "Everything I know about CSRF" blog post.
-    Response::builder(200)
-        .body("")
-        .content_type(mime::HTML)
-        .header("HX-Redirect", path)
-        .build()
 }
 
 #[tide::utils::async_trait]

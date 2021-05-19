@@ -68,6 +68,17 @@ impl ClientSideRefresh {
     /// cases where a client-side framework is sending AJAX requests and
     /// will use the presence of a specific header as a signal that to
     /// issue a client-side redirect.
+    ///
+    /// This is the only way to get an HTMX AJAX request to silently go
+    /// through the auth process. That is because HTMX is (sometimes)
+    /// doing a POST, which we are redirecting to the OpenID Connect
+    /// provider, and thus requires that provider to expose the proper
+    /// CORS headers. But it doesn't, so we get a CORS error. Using a
+    /// client-side redirect (by way of the HX-Redirect header *and a
+    /// 200 OK, not 302 Found* response), prevents the CORS check
+    /// because the client is just navigating to another location on
+    /// its own.
+    /// TODO Add the above to our "Everything I know about CSRF" blog post.
     pub fn with_header(mut self, name: impl Into<HeaderName>, values: impl ToHeaderValues) -> Self {
         self.headers
             .push((name.into(), values.to_header_values().unwrap().collect()));
