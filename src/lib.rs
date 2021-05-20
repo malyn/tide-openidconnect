@@ -19,17 +19,25 @@ use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
     reqwest::http_client,
     AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce, OAuth2TokenResponse,
+    SubjectIdentifier,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, Response, Route, StatusCode};
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
 
-// TODO Consider a single `tide.oidc` key that has a struct with the
-// current auth state in there.
-const CSRF_SESSION_KEY: &str = "tide.oidc.preauth-csrf";
-const NONCE_SESSION_KEY: &str = "tide.oidc.preauth-nonce";
-const USERID_SESSION_KEY: &str = "tide.oidc.userid";
+const SESSION_KEY: &str = "tide.oidc";
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PreAuthMiddlewareSessionState {
+    csrf_token: CsrfToken,
+    nonce: Nonce,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PostAuthMiddlewareSessionState {
+    subject: SubjectIdentifier,
+}
 
 #[derive(Debug, Deserialize)]
 struct OpenIdCallback {
@@ -205,7 +213,7 @@ impl OpenIdConnectMiddleware {
     where
         State: Clone + Send + Sync + 'static,
     {
-        let (authorize_url, csrf_state, nonce) = self
+        let (authorize_url, csrf_token, nonce) = self
             .client
             .authorize_url(
                 AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
@@ -217,10 +225,15 @@ impl OpenIdConnectMiddleware {
             // .add_scope(Scope::new("profile".to_string()))
             .url();
 
+        // Initialize the middleware's session state so that we can
+        // validate the login after the user completes the authentication
+        // flow.
         req.session_mut()
-            .insert(CSRF_SESSION_KEY, csrf_state)
+            .insert(
+                SESSION_KEY,
+                PreAuthMiddlewareSessionState { csrf_token, nonce },
+            )
             .unwrap();
-        req.session_mut().insert(NONCE_SESSION_KEY, nonce).unwrap();
 
         Ok(Redirect::new(&authorize_url).into())
     }
@@ -229,14 +242,29 @@ impl OpenIdConnectMiddleware {
     where
         State: Clone + Send + Sync + 'static,
     {
-        // Get the CSRF and Nonce values from the session state.
-        let csrf_state: CsrfToken = req.session().get(CSRF_SESSION_KEY).unwrap();
-        let nonce: Nonce = req.session().get(NONCE_SESSION_KEY).unwrap();
+        // Get the middleware state from the session. If this fails then
+        // A) the browser got to the callback URL without actually going
+        // through the auth process, or B) more likely, the session
+        // middleware is configured with Strict cookies instead of Lax
+        // cookies. We cannot tell at this level which error occurred,
+        // so we just reject the request and log the error.
+        let state: Option<PreAuthMiddlewareSessionState> = req.session().get(SESSION_KEY);
+        if state.is_none() {
+            tide::log::warn!(
+                "Missing OpenID Connect state in session; make sure SessionMiddleware is configured with SameSite::Lax (but do *not* mutate server-side state on GET requests if you make that change!)."
+            );
+            return Err(tide::http::Error::from_str(
+                StatusCode::InternalServerError,
+                "Missing authorization state.",
+            ));
+        }
+
+        let PreAuthMiddlewareSessionState { csrf_token, nonce } = state.unwrap();
 
         // Extract the OpenID callback information and verify the CSRF
         // state.
         let callback_data: OpenIdCallback = req.query()?;
-        if &callback_data.state != csrf_state.secret() {
+        if &callback_data.state != csrf_token.secret() {
             return Err(tide::http::Error::from_str(
                 StatusCode::Unauthorized,
                 "Invalid CSRF state.",
@@ -266,11 +294,14 @@ impl OpenIdConnectMiddleware {
         println!("User id: {}", claims.subject().as_str());
 
         // Add the user id to the session state in order to mark this
-        // session as authenticated. Remove the pre-auth session keys.
-        req.session_mut().remove(CSRF_SESSION_KEY);
-        req.session_mut().remove(NONCE_SESSION_KEY);
+        // session as authenticated.
         req.session_mut()
-            .insert(USERID_SESSION_KEY, claims.subject().as_str())
+            .insert(
+                SESSION_KEY,
+                PostAuthMiddlewareSessionState {
+                    subject: claims.subject().clone(),
+                },
+            )
             .unwrap();
 
         // The user has logged in; redirect them to the main site.
@@ -297,12 +328,17 @@ where
         {
             self.handle_callback(req).await
         } else {
+            // Get the middleware's session state (which will *not* be
+            // present if the browser has not yet gone through the auth
+            // process).
+            let state: Option<PostAuthMiddlewareSessionState> = req.session().get(SESSION_KEY);
+
             // Augment the request with the authentication status, then
-            // forward the request on to the remainder of the middleware
+            // forward the request to the remainder of the middleware
             // chain (which then has the option of using that status to
             // accept/reject the request.
             req.set_ext(OpenIdConnectRequestExtData {
-                user_id: req.session().get::<String>(USERID_SESSION_KEY),
+                user_id: state.map(|s| s.subject.to_string()),
                 redirect_strategy: self.redirect_strategy.clone(),
             });
 
