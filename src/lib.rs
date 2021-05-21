@@ -22,21 +22,16 @@ use openidconnect::{
     SubjectIdentifier,
 };
 use serde::{Deserialize, Serialize};
-use tide::{http::Method, Middleware, Next, Redirect, Request, Response, Route, StatusCode};
+use tide::{http::Method, Middleware, Next, Redirect, Request, Route, StatusCode};
 
 pub use openidconnect::{ClientId, ClientSecret, IssuerUrl, RedirectUrl};
 
 const SESSION_KEY: &str = "tide.oidc";
 
 #[derive(Debug, Deserialize, Serialize)]
-struct PreAuthMiddlewareSessionState {
-    csrf_token: CsrfToken,
-    nonce: Nonce,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct PostAuthMiddlewareSessionState {
-    subject: SubjectIdentifier,
+enum MiddlewareSessionState {
+    PreAuth(CsrfToken, Nonce),
+    PostAuth(SubjectIdentifier),
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,9 +40,13 @@ struct OpenIdCallback {
     state: String,
 }
 
-struct OpenIdConnectRequestExtData {
-    user_id: Option<String>,
-    redirect_strategy: Arc<dyn RedirectStrategy>,
+enum OpenIdConnectRequestExtData {
+    Authenticated {
+        user_id: String,
+    },
+    Unauthenticated {
+        redirect_strategy: Arc<dyn RedirectStrategy>,
+    },
 }
 
 /// Provides access to request-level OpenID Connect authorization data.
@@ -62,26 +61,24 @@ where
     State: Send + Sync + 'static,
 {
     fn user_id(&self) -> Option<String> {
-        let ext_data: &OpenIdConnectRequestExtData = self
-            .ext()
-            .expect("You must install OpenIdConnectMiddleware to access the Open ID request data.");
-        ext_data.user_id.clone()
+        match self.auth_state() {
+            OpenIdConnectRequestExtData::Authenticated { user_id } => Some(user_id.clone()),
+            _ => None,
+        }
     }
 }
 
 trait OpenIdConnectRequestExtInternal {
-    fn build_redirect(&self) -> Response;
+    fn auth_state(&self) -> &OpenIdConnectRequestExtData;
 }
 
 impl<State> OpenIdConnectRequestExtInternal for Request<State>
 where
     State: Send + Sync + 'static,
 {
-    fn build_redirect(&self) -> Response {
-        let ext_data: &OpenIdConnectRequestExtData = self
-            .ext()
-            .expect("You must install OpenIdConnectMiddleware to access the Open ID request data.");
-        ext_data.redirect_strategy.redirect()
+    fn auth_state(&self) -> &OpenIdConnectRequestExtData {
+        self.ext()
+            .expect("You must install OpenIdConnectMiddleware to access the Open ID request data.")
     }
 }
 
@@ -231,7 +228,7 @@ impl OpenIdConnectMiddleware {
         req.session_mut()
             .insert(
                 SESSION_KEY,
-                PreAuthMiddlewareSessionState { csrf_token, nonce },
+                MiddlewareSessionState::PreAuth(csrf_token, nonce),
             )
             .unwrap();
 
@@ -248,64 +245,61 @@ impl OpenIdConnectMiddleware {
         // middleware is configured with Strict cookies instead of Lax
         // cookies. We cannot tell at this level which error occurred,
         // so we just reject the request and log the error.
-        let state: Option<PreAuthMiddlewareSessionState> = req.session().get(SESSION_KEY);
-        if state.is_none() {
+        if let Some(MiddlewareSessionState::PreAuth(csrf_token, nonce)) =
+            req.session().get(SESSION_KEY)
+        {
+            // Extract the OpenID callback information and verify the CSRF
+            // state.
+            let callback_data: OpenIdCallback = req.query()?;
+            if &callback_data.state != csrf_token.secret() {
+                return Err(tide::http::Error::from_str(
+                    StatusCode::Unauthorized,
+                    "Invalid CSRF state.",
+                ));
+            }
+
+            // Exchange the code for a token.
+            // TODO Needs to use an async HTTP client, which means we need to
+            // build an openidconnect adapter to surf (which uses async-std,
+            // just like Tide).
+            let token_response = self
+                .client
+                .exchange_code(callback_data.code)
+                .request(http_client)
+                .unwrap();
+            println!("Access token: {}", token_response.access_token().secret());
+            println!("Scopes: {:?}", token_response.scopes());
+
+            // Get the claims and verify the nonce.
+            let claims = token_response
+                .extra_fields()
+                .id_token()
+                .expect("Server did not return an ID token")
+                .claims(&self.client.id_token_verifier(), &nonce)
+                .unwrap();
+            println!("ID token: {:?}", claims);
+            println!("User id: {}", claims.subject().as_str());
+
+            // Add the user id to the session state in order to mark this
+            // session as authenticated.
+            req.session_mut()
+                .insert(
+                    SESSION_KEY,
+                    MiddlewareSessionState::PostAuth(claims.subject().clone()),
+                )
+                .unwrap();
+
+            // The user has logged in; redirect them to the main site.
+            Ok(Redirect::new(&self.landing_path).into())
+        } else {
             tide::log::warn!(
-                "Missing OpenID Connect state in session; make sure SessionMiddleware is configured with SameSite::Lax (but do *not* mutate server-side state on GET requests if you make that change!)."
-            );
-            return Err(tide::http::Error::from_str(
+                    "Missing OpenID Connect state in session; make sure SessionMiddleware is configured with SameSite::Lax (but do *not* mutate server-side state on GET requests if you make that change!)."
+                );
+            Err(tide::http::Error::from_str(
                 StatusCode::InternalServerError,
                 "Missing authorization state.",
-            ));
+            ))
         }
-
-        let PreAuthMiddlewareSessionState { csrf_token, nonce } = state.unwrap();
-
-        // Extract the OpenID callback information and verify the CSRF
-        // state.
-        let callback_data: OpenIdCallback = req.query()?;
-        if &callback_data.state != csrf_token.secret() {
-            return Err(tide::http::Error::from_str(
-                StatusCode::Unauthorized,
-                "Invalid CSRF state.",
-            ));
-        }
-
-        // Exchange the code for a token.
-        // TODO Needs to use an async HTTP client, which means we need to
-        // build an openidconnect adapter to surf (which uses async-std,
-        // just like Tide).
-        let token_response = self
-            .client
-            .exchange_code(callback_data.code)
-            .request(http_client)
-            .unwrap();
-        println!("Access token: {}", token_response.access_token().secret());
-        println!("Scopes: {:?}", token_response.scopes());
-
-        // Get the claims and verify the nonce.
-        let claims = token_response
-            .extra_fields()
-            .id_token()
-            .expect("Server did not return an ID token")
-            .claims(&self.client.id_token_verifier(), &nonce)
-            .unwrap();
-        println!("ID token: {:?}", claims);
-        println!("User id: {}", claims.subject().as_str());
-
-        // Add the user id to the session state in order to mark this
-        // session as authenticated.
-        req.session_mut()
-            .insert(
-                SESSION_KEY,
-                PostAuthMiddlewareSessionState {
-                    subject: claims.subject().clone(),
-                },
-            )
-            .unwrap();
-
-        // The user has logged in; redirect them to the main site.
-        Ok(Redirect::new(&self.landing_path).into())
     }
 }
 
@@ -330,17 +324,18 @@ where
         } else {
             // Get the middleware's session state (which will *not* be
             // present if the browser has not yet gone through the auth
-            // process).
-            let state: Option<PostAuthMiddlewareSessionState> = req.session().get(SESSION_KEY);
-
-            // Augment the request with the authentication status, then
-            // forward the request to the remainder of the middleware
-            // chain (which then has the option of using that status to
-            // accept/reject the request.
-            req.set_ext(OpenIdConnectRequestExtData {
-                user_id: state.map(|s| s.subject.to_string()),
-                redirect_strategy: self.redirect_strategy.clone(),
-            });
+            // process), then augment the request with the authentication
+            // status.
+            match req.session().get(SESSION_KEY) {
+                Some(MiddlewareSessionState::PostAuth(subject)) => {
+                    req.set_ext(OpenIdConnectRequestExtData::Authenticated {
+                        user_id: subject.to_string(),
+                    })
+                }
+                _ => req.set_ext(OpenIdConnectRequestExtData::Unauthenticated {
+                    redirect_strategy: self.redirect_strategy.clone(),
+                }),
+            };
 
             // Call the downstream middleware.
             Ok(next.run(req).await)
@@ -359,14 +354,17 @@ where
         // Is the request authenticated? If so, forward the request to
         // the next item in the middleware chain. Otherwise, redirect the
         // browser to the login page.
-        if req.user_id().is_some() {
-            tide::log::debug!(
-                "Authenticated request; forwarding request to next item in middleware chain."
-            );
-            Ok(next.run(req).await)
-        } else {
-            tide::log::debug!("Unauthenticated request; redirecting browser to login page.");
-            Ok(req.build_redirect())
+        match req.auth_state() {
+            OpenIdConnectRequestExtData::Authenticated { user_id: _ } => {
+                tide::log::debug!(
+                    "Authenticated request; forwarding request to next item in middleware chain."
+                );
+                Ok(next.run(req).await)
+            }
+            OpenIdConnectRequestExtData::Unauthenticated { redirect_strategy } => {
+                tide::log::debug!("Unauthenticated request; redirecting browser to login page.");
+                Ok(redirect_strategy.redirect())
+            }
         }
     }
 }
