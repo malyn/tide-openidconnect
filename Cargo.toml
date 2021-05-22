@@ -6,7 +6,7 @@ edition = "2018"
 publish = false
 
 [dependencies]
-bytes = "1"
+async-std = { version = "1.9.0", features = ["attributes"] }
 futures-lite = "1.11"
 http = "0.2"
 isahc = "1.4.0"
@@ -17,5 +17,4 @@ thiserror = "1.0"
 tide = { version = "0.16.0", default-features = false, features = ["sessions"] }
 
 [dev-dependencies]
-async-std = { version = "1.9.0", features = ["attributes"] }
 tide-testing = "0.1"

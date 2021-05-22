@@ -1,8 +1,8 @@
 // TODO Move this into `lib.rs` so that we protect the entire library?
 #![deny(clippy::unwrap_in_result, clippy::unwrap_used)]
 
-use bytes::BufMut;
-use futures_lite::{AsyncRead, AsyncReadExt};
+use async_std::io::Cursor;
+use futures_lite::AsyncRead;
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};
 use once_cell::sync::Lazy;
 use openidconnect::{HttpRequest, HttpResponse};
@@ -59,18 +59,19 @@ pub(crate) async fn http_client(openid_request: HttpRequest) -> Result<HttpRespo
     })
 }
 
-async fn to_bytes<R>(mut body: R) -> Result<Vec<u8>, Error>
+async fn to_bytes<R>(reader: R) -> Result<Vec<u8>, Error>
 where
     R: AsyncRead + Unpin,
 {
-    let mut output = vec![];
-    let mut buf = [0u8; 1024];
-    loop {
-        match body.read(&mut buf[..]).await.map_err(Error::Io)? {
-            0 => break,
-            len => output.put(&buf[..len]),
-        }
-    }
+    // Create a cursor to a vector, which provides the vector with an
+    // AsyncRead trait that appends to the vector.
+    let mut writer = Cursor::new(Vec::new());
 
-    Ok(output)
+    // Asynchronously copy the data from the reader to the buffer.
+    async_std::io::copy(reader, &mut writer)
+        .await
+        .map_err(Error::Io)?;
+
+    // Return the buffer inside of the reader.
+    Ok(writer.into_inner())
 }
