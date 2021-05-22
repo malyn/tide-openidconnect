@@ -1644,6 +1644,7 @@ dependencies = [
  "once_cell",
  "openidconnect",
  "serde",
+ "thiserror",
  "tide",
  "tide-testing",
 ]
