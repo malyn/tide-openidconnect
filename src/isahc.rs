@@ -1,18 +1,23 @@
 use bytes::BufMut;
 use futures_lite::io::AsyncReadExt;
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};
+use once_cell::sync::Lazy;
 use openidconnect::{HttpRequest, HttpResponse};
 
-pub(crate) async fn http_client(request: HttpRequest) -> Result<HttpResponse, isahc::Error> {
-    // TODO Create/Cache the client in a lazy/once/whatever singleton,
-    // since isahc really wants you to only create one client per "module"
-    // (which in this case is our middleware). Otherwise you could run
-    // into some issues related to creating too many resources like sockets
-    // and threads.
-    let client = HttpClient::builder()
+// Isahc recommends that you create a single client per "area of application"
+// and reuse that client through your code. We have to create a global client
+// instance (instead of putting the client in a struct and then having the
+// `http_client` function be a trait function) because we need to pass the
+// bare `http_client` function to the oauth2-rs crate and we cannot close
+// over `self` when doing that.
+static HTTP_CLIENT: Lazy<HttpClient> = Lazy::new(|| {
+    HttpClient::builder()
         .redirect_policy(RedirectPolicy::None)
-        .build()?;
+        .build()
+        .unwrap()
+});
 
+pub(crate) async fn http_client(request: HttpRequest) -> Result<HttpResponse, isahc::Error> {
     let mut request_builder = Request::builder()
         .method(request.method)
         .uri(request.url.as_str());
@@ -21,7 +26,7 @@ pub(crate) async fn http_client(request: HttpRequest) -> Result<HttpResponse, is
     }
     let isahc_request = request_builder.body(request.body).unwrap();
 
-    let isahc_response = client.send_async(isahc_request).await?;
+    let isahc_response = HTTP_CLIENT.send_async(isahc_request).await?;
     let status_code = isahc_response.status();
     let headers = isahc_response.headers().to_owned();
     let mut response_body = isahc_response.into_body();

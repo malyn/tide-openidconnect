@@ -1641,6 +1641,7 @@ dependencies = [
  "futures-lite",
  "http",
  "isahc",
+ "once_cell",
  "openidconnect",
  "serde",
  "tide",
