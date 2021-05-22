@@ -2,7 +2,7 @@
 #![deny(clippy::unwrap_in_result, clippy::unwrap_used)]
 
 use bytes::BufMut;
-use futures_lite::io::AsyncReadExt;
+use futures_lite::{AsyncRead, AsyncReadExt};
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};
 use once_cell::sync::Lazy;
 use openidconnect::{HttpRequest, HttpResponse};
@@ -51,22 +51,26 @@ pub(crate) async fn http_client(openid_request: HttpRequest) -> Result<HttpRespo
         .send_async(request)
         .await
         .map_err(Error::Isahc)?;
-    let status_code = response.status();
-    let headers = response.headers().to_owned();
-    let mut response_body = response.into_body();
 
-    let mut body = vec![];
+    Ok(HttpResponse {
+        status_code: response.status(),
+        headers: response.headers().to_owned(),
+        body: to_bytes(response.into_body()).await?,
+    })
+}
+
+async fn to_bytes<R>(mut body: R) -> Result<Vec<u8>, Error>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut output = vec![];
     let mut buf = [0u8; 1024];
     loop {
-        match response_body.read(&mut buf[..]).await.map_err(Error::Io)? {
+        match body.read(&mut buf[..]).await.map_err(Error::Io)? {
             0 => break,
-            len => body.put(&buf[..len]),
+            len => output.put(&buf[..len]),
         }
     }
 
-    Ok(HttpResponse {
-        status_code,
-        headers,
-        body,
-    })
+    Ok(output)
 }
