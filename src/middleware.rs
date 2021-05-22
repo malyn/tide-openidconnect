@@ -19,12 +19,6 @@ enum MiddlewareSessionState {
     PostAuth(SubjectIdentifier),
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenIdCallback {
-    code: AuthorizationCode,
-    state: String,
-}
-
 /// # Middleware to enable OpenID Connect-based authentication
 ///
 /// ... add docs ...
@@ -196,6 +190,11 @@ impl OpenIdConnectMiddleware {
         {
             // Extract the OpenID callback information and verify the CSRF
             // state.
+            #[derive(Deserialize)]
+            struct OpenIdCallback {
+                code: AuthorizationCode,
+                state: String,
+            }
             let callback_data: OpenIdCallback = req.query()?;
             if &callback_data.state != csrf_token.secret() {
                 return Err(tide::http::Error::from_str(
