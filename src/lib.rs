@@ -15,11 +15,13 @@ pub mod redirect_strategy;
 use std::sync::Arc;
 
 use crate::redirect_strategy::{HttpRedirect, RedirectStrategy};
+use bytes::BufMut;
+use futures_lite::io::AsyncReadExt;
+use isahc::{prelude::*, HttpClient};
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
-    reqwest::http_client,
-    AuthenticationFlow, AuthorizationCode, CsrfToken, Nonce, OAuth2TokenResponse,
-    SubjectIdentifier,
+    AuthenticationFlow, AuthorizationCode, CsrfToken, HttpRequest, HttpResponse, Nonce,
+    OAuth2TokenResponse, SubjectIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, Route, StatusCode};
@@ -156,7 +158,9 @@ impl OpenIdConnectMiddleware {
         redirect_url: RedirectUrl,
     ) -> Self {
         // Get the OpenID Connect provider metadata.
-        let provider_metadata = CoreProviderMetadata::discover(&issuer_url, http_client).unwrap();
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, isahc_http_client)
+            .await
+            .unwrap();
 
         // Create the OpenID Connect client.
         let client =
@@ -259,13 +263,11 @@ impl OpenIdConnectMiddleware {
             }
 
             // Exchange the code for a token.
-            // TODO Needs to use an async HTTP client, which means we need to
-            // build an openidconnect adapter to surf (which uses async-std,
-            // just like Tide).
             let token_response = self
                 .client
                 .exchange_code(callback_data.code)
-                .request(http_client)
+                .request_async(isahc_http_client)
+                .await
                 .unwrap();
             println!("Access token: {}", token_response.access_token().secret());
             println!("Scopes: {:?}", token_response.scopes());
@@ -383,6 +385,46 @@ impl<'a, State: Clone + Send + Sync + 'static> OpenIdConnectRouteExt for Route<'
         println!("authenticated() called on {}", self.path());
         self.with(MustAuthenticateMiddleware {})
     }
+}
+
+async fn isahc_http_client(request: HttpRequest) -> Result<HttpResponse, isahc::Error> {
+    // TODO Create/Cache the client in a lazy/once/whatever singleton,
+    // since isahc really wants you to only create one client per "module"
+    // (which in this case is our middleware). Otherwise you could run
+    // into some issues related to creating too many resources like sockets
+    // and threads.
+    let client = HttpClient::builder()
+        .redirect_policy(isahc::config::RedirectPolicy::None)
+        .build()?;
+
+    let mut request_builder = isahc::Request::builder()
+        .method(request.method)
+        .uri(request.url.as_str());
+    for (name, value) in &request.headers {
+        request_builder = request_builder.header(name.as_str(), value.as_bytes());
+    }
+    let isahc_request = request_builder.body(request.body).unwrap();
+
+    let isahc_response = client.send_async(isahc_request).await?;
+    let status_code = isahc_response.status();
+    let headers = isahc_response.headers().to_owned();
+    let mut response_body = isahc_response.into_body();
+
+    let mut body = vec![];
+    let mut buf = [0u8; 1024];
+    loop {
+        match response_body.read(&mut buf[..]).await {
+            Ok(0) => break,
+            Ok(len) => body.put(&buf[..len]),
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(HttpResponse {
+        status_code,
+        headers,
+        body,
+    })
 }
 
 #[cfg(test)]
