@@ -1,5 +1,4 @@
-use async_std::io::Cursor;
-use futures_lite::AsyncRead;
+use futures_lite::{io::Cursor, AsyncRead};
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};
 use once_cell::sync::Lazy;
 use openidconnect::{HttpRequest, HttpResponse};
@@ -65,7 +64,7 @@ where
     let mut writer = Cursor::new(Vec::new());
 
     // Asynchronously copy the data from the reader to the buffer.
-    async_std::io::copy(reader, &mut writer)
+    futures_lite::io::copy(reader, &mut writer)
         .await
         .map_err(Error::Io)?;
 
