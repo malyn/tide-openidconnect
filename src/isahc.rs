@@ -1,6 +1,3 @@
-// TODO Move this into `lib.rs` so that we protect the entire library?
-#![deny(clippy::unwrap_in_result, clippy::unwrap_used)]
-
 use async_std::io::Cursor;
 use futures_lite::AsyncRead;
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient, Request};

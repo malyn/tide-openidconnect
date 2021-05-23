@@ -80,8 +80,13 @@ impl ClientSideRefresh {
     /// its own.
     /// TODO Add the above to our "Everything I know about CSRF" blog post.
     pub fn with_header(mut self, name: impl Into<HeaderName>, values: impl ToHeaderValues) -> Self {
-        self.headers
-            .push((name.into(), values.to_header_values().unwrap().collect()));
+        self.headers.push((
+            name.into(),
+            values
+                .to_header_values()
+                .expect("Invalid header value.")
+                .collect(),
+        ));
         self
     }
 }

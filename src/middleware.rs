@@ -96,7 +96,7 @@ impl OpenIdConnectMiddleware {
         let provider_metadata =
             CoreProviderMetadata::discover_async(issuer_url, isahc::http_client)
                 .await
-                .unwrap();
+                .expect("Unable to load OpenID Connect provider metadata.");
 
         // Create the OpenID Connect client.
         let client =
@@ -170,7 +170,7 @@ impl OpenIdConnectMiddleware {
                 SESSION_KEY,
                 MiddlewareSessionState::PreAuth(csrf_token, nonce),
             )
-            .unwrap();
+            .expect("OpenIdConnectMiddleware also requires SessionMiddleware.");
 
         Ok(Redirect::new(&authorize_url).into())
     }
@@ -209,7 +209,7 @@ impl OpenIdConnectMiddleware {
                 .exchange_code(callback_data.code)
                 .request_async(isahc::http_client)
                 .await
-                .unwrap();
+                .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
             println!("Access token: {}", token_response.access_token().secret());
             println!("Scopes: {:?}", token_response.scopes());
 
@@ -217,9 +217,14 @@ impl OpenIdConnectMiddleware {
             let claims = token_response
                 .extra_fields()
                 .id_token()
-                .expect("Server did not return an ID token")
+                .ok_or_else(|| {
+                    tide::http::Error::from_str(
+                        StatusCode::InternalServerError,
+                        "OpenID Connect server did not return an ID token.",
+                    )
+                })?
                 .claims(&self.client.id_token_verifier(), &nonce)
-                .unwrap();
+                .map_err(|error| tide::http::Error::new(StatusCode::Unauthorized, error))?;
             println!("ID token: {:?}", claims);
             println!("User id: {}", claims.subject().as_str());
 
@@ -230,7 +235,7 @@ impl OpenIdConnectMiddleware {
                     SESSION_KEY,
                     MiddlewareSessionState::PostAuth(claims.subject().clone()),
                 )
-                .unwrap();
+                .expect("OpenIdConnectMiddleware also requires SessionMiddleware.");
 
             // The user has logged in; redirect them to the main site.
             Ok(Redirect::new(&self.landing_path).into())
