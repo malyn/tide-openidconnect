@@ -6,7 +6,7 @@ use crate::request_ext::OpenIdConnectRequestExtData;
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
     AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-    OAuth2TokenResponse, RedirectUrl, SubjectIdentifier,
+    OAuth2TokenResponse, RedirectUrl, Scope, SubjectIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
@@ -62,6 +62,7 @@ enum MiddlewareSessionState {
 pub struct OpenIdConnectMiddleware {
     login_path: String,
     redirect_url: RedirectUrl,
+    scopes: Vec<Scope>,
     landing_path: String,
     client: CoreClient,
     redirect_strategy: Arc<dyn RedirectStrategy>,
@@ -71,6 +72,7 @@ impl std::fmt::Debug for OpenIdConnectMiddleware {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OpenIdConnectMiddleware")
             .field("login_path", &self.login_path)
+            .field("scopes", &self.scopes)
             .field("redirect_url", &self.redirect_url)
             .field("landing_path", &self.landing_path)
             .finish()
@@ -84,6 +86,7 @@ impl OpenIdConnectMiddleware {
     /// # Defaults
     ///
     /// The defaults for OpenIdConnectMiddleware are:
+    /// - redirect strategy: HttpRedirect
     /// - login path: "/login"
     /// - landing path: "/"
     pub async fn new(
@@ -107,6 +110,7 @@ impl OpenIdConnectMiddleware {
         let login_path = "/login".to_string();
         Self {
             login_path: login_path.clone(),
+            scopes: vec![Scope::new("openid".to_string())],
             redirect_url,
             landing_path: "/".to_string(),
             client,
@@ -121,6 +125,17 @@ impl OpenIdConnectMiddleware {
     /// Defaults to "/login".
     pub fn with_login_path(mut self, login_path: &str) -> Self {
         self.login_path = login_path.to_string();
+        self
+    }
+
+    /// Adds one or more scopes to the OpenID Connect request.
+    ///
+    /// Defaults to "openid" (which is the minimum required scope).
+    pub fn with_scopes(mut self, scopes: &[impl AsRef<str>]) -> Self {
+        self.scopes = scopes
+            .iter()
+            .map(|s| Scope::new(s.as_ref().to_owned()))
+            .collect();
         self
     }
 
@@ -150,17 +165,15 @@ impl OpenIdConnectMiddleware {
     where
         State: Clone + Send + Sync + 'static,
     {
-        let (authorize_url, csrf_token, nonce) = self
-            .client
-            .authorize_url(
-                AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
-                CsrfToken::new_random,
-                Nonce::new_random,
-            )
-            // TODO Scopes will need to be configurable once we turn this into middleware.
-            // FIXME Crashes if we enable this due to: <https://github.com/ramosbugs/openidconnect-rs/issues/23>
-            // .add_scope(Scope::new("profile".to_string()))
-            .url();
+        let mut request = self.client.authorize_url(
+            AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
+            CsrfToken::new_random,
+            Nonce::new_random,
+        );
+        for s in &self.scopes {
+            request = request.add_scope(s.clone());
+        }
+        let (authorize_url, csrf_token, nonce) = request.url();
 
         // Initialize the middleware's session state so that we can
         // validate the login after the user completes the authentication
