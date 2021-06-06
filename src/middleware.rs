@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::isahc;
 use crate::redirect_strategy::{HttpRedirect, RedirectStrategy};
 use crate::request_ext::OpenIdConnectRequestExtData;
 use openidconnect::{
@@ -10,6 +9,27 @@ use openidconnect::{
 };
 use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
+
+// Why are we using cfg(not(test)) / cfg(test) to select the http_client
+// implementation? Because oauth2-rs, the crate that powers openidconnect-rs,
+// expects the http_client function to be an asynchronous function instead
+// of a(n asynchronous) trait. I can't find a way to expose a `with_http_client`
+// function in the middleware trait and so my only option is to hardcode
+// the http_client when we call openidconnect-rs. But that prevents us from
+// writing unit tests without also implementing (an HTTPS!) OpenID Connect
+// *server* in the tests. The simplest solution is to use conditional
+// compilation to select the mock client when running tests, although all
+// things considered I feel like the best solution would be for oauth2-rs
+// to accept an async trait for the http_client instead of an async function.
+// Note that this issue doesn't affect the openidconnect-rs/oauth2-rs tests
+// (in those crates) themselves, because they are written at a level where
+// they can trivially pass in a mock async function; it is only the users
+// of those crates that run into this mocking issue.
+#[cfg(not(test))]
+use crate::isahc::http_client;
+
+#[cfg(test)]
+use tests::http_client;
 
 const SESSION_KEY: &str = "tide.oidc";
 
@@ -51,7 +71,7 @@ enum MiddlewareSessionState {
 ///
 /// app.at("/").get(|req: tide::Request<()>| async move {
 ///     Ok(format!(
-///         "If you got this far, then the user is authenticated, and their user id is {}",
+///         "If you got this far, then the user is authenticated, and their user id is {:?}",
 ///         req.user_id()
 ///     ))
 /// });
@@ -96,10 +116,9 @@ impl OpenIdConnectMiddleware {
         redirect_url: RedirectUrl,
     ) -> Self {
         // Get the OpenID Connect provider metadata.
-        let provider_metadata =
-            CoreProviderMetadata::discover_async(issuer_url, isahc::http_client)
-                .await
-                .expect("Unable to load OpenID Connect provider metadata.");
+        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_client)
+            .await
+            .expect("Unable to load OpenID Connect provider metadata.");
 
         // Create the OpenID Connect client.
         let client =
@@ -220,7 +239,7 @@ impl OpenIdConnectMiddleware {
             let token_response = self
                 .client
                 .exchange_code(callback_data.code)
-                .request_async(isahc::http_client)
+                .request_async(http_client)
                 .await
                 .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
             println!("Access token: {}", token_response.access_token().secret());
@@ -305,8 +324,120 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    // use super::*;
-    // use tide::Request;
-    // use tide_testing::{surf::Response, TideTestingExt};
+    use std::sync::Arc;
+
+    use async_lock::Mutex;
+    use once_cell::sync::Lazy;
+    use openidconnect::{HttpRequest, HttpResponse};
+    use tide::{http::headers::LOCATION, Request, StatusCode};
+    use tide_testing::TideTestingExt;
+
+    use super::*;
+    use crate::route_ext::OpenIdConnectRouteExt;
+
+    const SECRET: [u8; 32] = *b"secrets must be >= 32 bytes long";
+
+    #[derive(Clone, Debug, thiserror::Error)]
+    pub(crate) enum Error {
+        // /// Test error.
+    // #[error("Test error: {}", _0)]
+    // Test(String),
+    }
+
+    type PendingResponse = Vec<(String, Result<HttpResponse, Error>)>;
+
+    static PENDING_RESPONSE: Lazy<Arc<Mutex<PendingResponse>>> =
+        Lazy::new(|| Arc::new(Mutex::new(vec![])));
+
+    async fn set_pending_response(response: PendingResponse) {
+        (*PENDING_RESPONSE.lock().await) = response;
+    }
+
+    pub(crate) async fn http_client(openid_request: HttpRequest) -> Result<HttpResponse, Error> {
+        // Get the pending response, which must exist (otherwise the test
+        // has a bug).
+        let mut pending_response_guard = PENDING_RESPONSE.lock().await;
+        let pending_response: &mut PendingResponse = (*pending_response_guard).as_mut();
+
+        // Pop the first request from the vector, *ensure that it matches
+        // the request URI,* then return that response.
+        if pending_response.is_empty() {
+            panic!("No pending response for URL \"{}\"", openid_request.url);
+        }
+        let (expected_uri, response) = pending_response.remove(0);
+        assert_eq!(openid_request.url.to_string(), expected_uri);
+        response
+    }
+
+    #[async_std::test]
+    async fn unauthed_request_redirects_to_login_uri() -> tide::Result<()> {
+        let mut app = tide::new();
+        app.with(tide::sessions::SessionMiddleware::new(
+            tide::sessions::MemoryStore::new(),
+            &SECRET,
+        ));
+
+        set_pending_response(vec![
+            (
+                "https://localhost/issuer_url/.well-known/openid-configuration".to_string(),
+                Ok(HttpResponse {
+                    status_code: http::StatusCode::OK,
+                    headers: http::HeaderMap::new(),
+                    body: "{
+                        \"issuer\":\"https://localhost/issuer_url\",
+                        \"authorization_endpoint\":\"https://localhost/authorization\",
+                        \"jwks_uri\":\"https://localhost/jwks\",
+                        \"response_types_supported\":[\"code\"],
+                        \"subject_types_supported\":[\"public\"],
+                        \"id_token_signing_alg_values_supported\":[\"RS256\"]
+                    }"
+                    .as_bytes()
+                    .into(),
+                }),
+            ),
+            (
+                "https://localhost/jwks".to_string(),
+                Ok(HttpResponse {
+                    status_code: http::StatusCode::OK,
+                    headers: http::HeaderMap::new(),
+                    body: "{\"keys\":[]}".as_bytes().into(),
+                }),
+            ),
+        ])
+        .await;
+
+        // TODO Maybe have an `async fn with_provider_metadata(IssuerUrl)`
+        // that is for "normal" use, but then also a ... `with_config()`
+        // or something function that can be used if you do *not* have a
+        // provider endpoint (and for unit tests)? And then we just use
+        // that function here after verifying that provider metadata works...
+        app.with(
+            OpenIdConnectMiddleware::new(
+                IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap(),
+                ClientId::new("CLIENT-ID".to_string()),
+                ClientSecret::new("CLIENT-SECRET".to_string()),
+                RedirectUrl::new("https://localhost/callback".to_string()).unwrap(),
+            )
+            .await,
+        );
+
+        app.at("/")
+            .authenticated()
+            .get(|_req: Request<()>| -> std::pin::Pin<Box<dyn futures_lite::Future<Output = tide::Result> + Send>> {
+                panic!(
+                    "An unauthenticated request should not have made it to an `authenticated()` handler."
+                );
+            });
+
+        let res = app.get("/").await?;
+        assert_eq!(res.status(), StatusCode::Found);
+        assert_eq!(
+            res.header(LOCATION).unwrap().get(0).unwrap().to_string(),
+            "/login"
+        );
+
+        Ok(())
+    }
 }

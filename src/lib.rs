@@ -12,6 +12,7 @@
     clippy::unwrap_used
 )]
 
+#[cfg(not(test))]
 mod isahc;
 mod middleware;
 pub mod redirect_strategy;

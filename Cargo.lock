@@ -1636,6 +1636,7 @@ dependencies = [
 name = "tide-openidconnect"
 version = "0.1.0"
 dependencies = [
+ "async-lock",
  "async-std",
  "futures-lite",
  "http",
