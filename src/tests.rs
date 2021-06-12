@@ -6,7 +6,11 @@ use async_lock::Mutex;
 use async_std::prelude::*;
 use once_cell::sync::Lazy;
 use openidconnect::{HttpRequest, HttpResponse};
-use tide::{http::headers::LOCATION, Request, StatusCode};
+use tide::{
+    http::headers::LOCATION,
+    sessions::{MemoryStore, SessionMiddleware},
+    Request, StatusCode,
+};
 use tide_testing::TideTestingExt;
 
 use crate::{
@@ -96,36 +100,62 @@ fn create_jwks_response() -> PendingResponse {
     )
 }
 
-#[async_std::test]
-async fn unauthed_request_redirects_to_login_uri() -> tide::Result<()> {
-    let mut app = tide::new();
-    app.with(tide::sessions::SessionMiddleware::new(
-        tide::sessions::MemoryStore::new(),
-        &SECRET,
-    ));
+#[derive(Debug, PartialEq)]
+struct ParsedAuthorizeUrl {
+    host: String,
+    path: String,
+    response_type: String,
+    client_id: String,
+    scopes: String,
+    state: Option<String>,
+    nonce: Option<String>,
+    redirect_uri: String,
+}
 
-    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+impl ParsedAuthorizeUrl {
+    fn default() -> Self {
+        Self {
+            host: "localhost".to_owned(),
+            path: "/authorization".to_owned(),
+            response_type: "code".to_owned(),
+            client_id: CLIENT_ID.to_string(),
+            scopes: "openid".to_owned(),
+            state: None,
+            nonce: None,
+            redirect_uri: "https://localhost/callback".to_string(),
+        }
+    }
 
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    fn from_url(s: impl AsRef<str>) -> Self {
+        let url = openidconnect::url::Url::parse(s.as_ref()).unwrap();
+        let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
 
-    app.at("/")
-        .authenticated()
-        .get(|_req: Request<()>| -> std::pin::Pin<Box<dyn Future<Output = tide::Result> + Send>> {
-            panic!(
-                "An unauthenticated request should not have made it to an `authenticated()` handler."
-            );
-        });
+        Self {
+            host: url.host_str().unwrap().to_owned(),
+            path: url.path().to_owned(),
+            response_type: query.get("response_type").unwrap().to_owned(),
+            client_id: query.get("client_id").unwrap().to_owned(),
+            scopes: query.get("scope").unwrap().to_owned(),
+            state: Some(query.get("state").unwrap().to_owned()),
+            nonce: Some(query.get("nonce").unwrap().to_owned()),
+            redirect_uri: query.get("redirect_uri").unwrap().to_owned(),
+        }
+    }
 
-    let res = app.get("/").await?;
-    assert_eq!(res.status(), StatusCode::Found);
-    assert_eq!(
-        res.header(LOCATION).unwrap().get(0).unwrap().to_string(),
-        "/login"
-    );
+    fn with_nonce(self, nonce: Option<String>) -> Self {
+        Self { nonce, ..self }
+    }
 
-    Ok(())
+    fn with_scopes(self, scopes: impl AsRef<str>) -> Self {
+        Self {
+            scopes: scopes.as_ref().to_owned(),
+            ..self
+        }
+    }
+
+    fn with_state(self, state: Option<String>) -> Self {
+        Self { state, ..self }
+    }
 }
 
 #[async_std::test]
@@ -140,46 +170,74 @@ async fn middleware_can_be_initialized() -> tide::Result<()> {
 }
 
 #[async_std::test]
-async fn middleware_implements_login_handler() -> tide::Result<()> {
+async fn middleware_provides_login_route() -> tide::Result<()> {
     let mut app = tide::new();
-    app.with(tide::sessions::SessionMiddleware::new(
-        tide::sessions::MemoryStore::new(),
-        &SECRET,
-    ));
+    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-
     app.with(
         OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
     );
 
     let res = app.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
-
-    let url =
-        openidconnect::url::Url::parse(res.header(LOCATION).unwrap().get(0).unwrap().as_str())
-            .unwrap();
-    assert_eq!(url.host_str().unwrap(), "localhost");
-    assert_eq!(url.path(), "/authorization");
-    let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
-    assert_eq!(query.get("response_type").unwrap(), "code");
-    assert_eq!(query.get("client_id").unwrap(), CLIENT_ID.as_str());
-    assert_eq!(query.get("scope").unwrap(), "openid");
-    assert!(query.contains_key("state"));
-    assert!(query.contains_key("nonce"));
     assert_eq!(
-        query.get("redirect_uri").unwrap(),
-        "https://localhost/callback"
+        ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str())
+            .with_nonce(None)
+            .with_state(None),
+        ParsedAuthorizeUrl::default(),
     );
 
     Ok(())
 }
 
-// async fn login_path_can_be_changed() -> tide::Result<()> {
-// Same as above, but changing the /login path works.
+#[async_std::test]
+async fn login_path_can_be_changed() -> tide::Result<()> {
+    let mut app = tide::new();
+    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
 
-// async fn oauth_scopes_can_be_changed() -> tide::Result<()> {
-// Same as above, but now the new/different scopes show up in the authorize_url.
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL)
+            .await
+            .with_login_path("/oauthlogin"),
+    );
+
+    let res = app.get("/oauthlogin").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+    assert_eq!(
+        ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str())
+            .with_nonce(None)
+            .with_state(None),
+        ParsedAuthorizeUrl::default(),
+    );
+
+    Ok(())
+}
+
+#[async_std::test]
+async fn oauth_scopes_can_be_changed() -> tide::Result<()> {
+    let mut app = tide::new();
+    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL)
+            .await
+            .with_scopes(&["profile"]),
+    );
+
+    let res = app.get("/login").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+    assert_eq!(
+        ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str())
+            .with_nonce(None)
+            .with_state(None),
+        ParsedAuthorizeUrl::default().with_scopes("openid profile"),
+    );
+
+    Ok(())
+}
 
 // async fn logic_panics_on_missing_session_middleware() -> tide::Result<()> {
 // Same as above, but we get a panic if the session middleware was not configured.
@@ -201,8 +259,33 @@ async fn middleware_implements_login_handler() -> tide::Result<()> {
 // async fn unauthenticated_routes_do_not_force_login() -> tide::Result<()> {
 // Basically: a request to a random /foo URL works.
 
-// async fn authenticated_routes_require_login() -> tide::Result<()> {
-// Basically: a request to a an `.authenticated().` /foo URL redirects to /login.
+#[async_std::test]
+async fn authenticated_routes_require_login() -> tide::Result<()> {
+    let mut app = tide::new();
+    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    app.at("/needsauth")
+        .authenticated()
+        .get(|_req: Request<()>| -> std::pin::Pin<Box<dyn Future<Output = tide::Result> + Send>> {
+            panic!(
+                "An unauthenticated request should not have made it to an `authenticated()` handler."
+            );
+        });
+
+    let res = app.get("/needsauth").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+    assert_eq!(
+        res.header(LOCATION).unwrap().get(0).unwrap().to_string(),
+        "/login"
+    );
+
+    Ok(())
+}
 
 // async fn authenticated_and_unauthenticated_routes_can_coexist() -> tide::Result<()> {
 // Basically: two routes, one that works and one that redirects to /login.
