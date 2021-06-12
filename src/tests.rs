@@ -239,23 +239,36 @@ async fn oauth_scopes_can_be_changed() -> tide::Result<()> {
     Ok(())
 }
 
-// async fn logic_panics_on_missing_session_middleware() -> tide::Result<()> {
-// Same as above, but we get a panic if the session middleware was not configured.
+#[async_std::test]
+#[should_panic(
+    expected = "request session not initialized, did you enable tide::sessions::SessionMiddleware?"
+)]
+async fn login_panics_on_missing_session_middleware() {
+    let mut app = tide::new();
+    // Note: *No* session middleware was added to the server.
 
-// async fn middleware_implements_redirect_handler() -> tide::Result<()> {
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    let _result = app.get("/login").await;
+}
+
+// async fn middleware_provides_redirect_route() -> tide::Result<()> {
 // Request to redirect_url (with the authorization code and stuff): checks the nonce and CSRF, makes the token call, sets session state, can get req.user_id() or whatever.
 
-// async fn redirect_handler_rejects_invalid_csrf() -> tide::Result<()> {
+// async fn redirect_route_rejects_invalid_csrf() -> tide::Result<()> {
 // Same as above but with a non-matching CSRF: error.
 
-// async fn redirect_handler_rejects_invalid_nonce() -> tide::Result<()> {
+// async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
 // Same as above but with a non-matching nonce: error.
 
-// async fn redirect_handler_errors_on_missing_session_middleware() -> tide::Result<()> {
+// async fn redirect_route_errors_on_missing_session_middleware() -> tide::Result<()> {
 // *Error* (not panic) on missing session middleware, since this is indistinguishable from an expired session that was simply not present in the session store.
 // I *think.* Let's verify that this is in fact what happens, because maybe we want one version that panics (if we can in fact detect that the session middleware is missing).
 
-// TODO Move these to `route_ext.rs`?
+// TODO Add a big separator block here to show that we are now testing the route extensions.
 // async fn unauthenticated_routes_do_not_force_login() -> tide::Result<()> {
 // Basically: a request to a random /foo URL works.
 
