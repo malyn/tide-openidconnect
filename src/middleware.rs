@@ -108,6 +108,7 @@ impl OpenIdConnectMiddleware {
     /// The defaults for OpenIdConnectMiddleware are:
     /// - redirect strategy: HttpRedirect
     /// - login path: "/login"
+    /// - scopes: ["openid"]
     /// - landing path: "/"
     pub async fn new(
         issuer_url: &IssuerUrl,
@@ -129,12 +130,13 @@ impl OpenIdConnectMiddleware {
         )
         .set_redirect_uri(redirect_url.clone());
 
-        // Initialize the middleware with our defaults.
+        // Initialize the middleware with our defaults. Note that we do not
+        // have to include "openid" in the (default) scopes, because the
+        // openidconnect-rs crate always adds that to the scopes list.
         let login_path = "/login".to_string();
         Self {
             login_path: login_path.clone(),
-            scopes: vec![Scope::new("openid".to_string())],
-            redirect_url,
+            scopes: vec![],
             redirect_url: redirect_url.clone(),
             landing_path: "/".to_string(),
             client,

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_lock::Mutex;
 use async_std::prelude::*;
@@ -139,8 +139,41 @@ async fn middleware_can_be_initialized() -> tide::Result<()> {
     Ok(())
 }
 
-// async fn middleware_implements_login_handler() -> tide::Result<()> {
-// Similar to the above test: verify that a request to /login generates a redirect to the authorize_url.
+#[async_std::test]
+async fn middleware_implements_login_handler() -> tide::Result<()> {
+    let mut app = tide::new();
+    app.with(tide::sessions::SessionMiddleware::new(
+        tide::sessions::MemoryStore::new(),
+        &SECRET,
+    ));
+
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    let res = app.get("/login").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+
+    let url =
+        openidconnect::url::Url::parse(res.header(LOCATION).unwrap().get(0).unwrap().as_str())
+            .unwrap();
+    assert_eq!(url.host_str().unwrap(), "localhost");
+    assert_eq!(url.path(), "/authorization");
+    let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(query.get("response_type").unwrap(), "code");
+    assert_eq!(query.get("client_id").unwrap(), CLIENT_ID.as_str());
+    assert_eq!(query.get("scope").unwrap(), "openid");
+    assert!(query.contains_key("state"));
+    assert!(query.contains_key("nonce"));
+    assert_eq!(
+        query.get("redirect_uri").unwrap(),
+        "https://localhost/callback"
+    );
+
+    Ok(())
+}
 
 // async fn login_path_can_be_changed() -> tide::Result<()> {
 // Same as above, but changing the /login path works.
