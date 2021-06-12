@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_lock::Mutex;
 use async_std::prelude::*;
+use once_cell::sync::Lazy;
 use openidconnect::{HttpRequest, HttpResponse};
 use tide::{http::headers::LOCATION, Request, StatusCode};
 use tide_testing::TideTestingExt;
@@ -14,6 +15,14 @@ use crate::{
 
 const SECRET: [u8; 32] = *b"secrets must be >= 32 bytes long";
 
+static ISSUER_URL: Lazy<IssuerUrl> =
+    Lazy::new(|| IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap());
+static CLIENT_ID: Lazy<ClientId> = Lazy::new(|| ClientId::new("CLIENT-ID".to_string()));
+static CLIENT_SECRET: Lazy<ClientSecret> =
+    Lazy::new(|| ClientSecret::new("CLIENT-SECRET".to_string()));
+static REDIRECT_URL: Lazy<RedirectUrl> =
+    Lazy::new(|| RedirectUrl::new("https://localhost/callback".to_string()).unwrap());
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub(crate) enum Error {
     // /// Test error.
@@ -21,14 +30,14 @@ pub(crate) enum Error {
 // Test(String),
 }
 
-type PendingResponse = Vec<(String, Result<HttpResponse, Error>)>;
+type PendingResponse = (String, Result<HttpResponse, Error>);
 
 task_local! {
-    static PENDING_RESPONSE: Arc<Mutex<PendingResponse>> =
+    static PENDING_RESPONSE: Arc<Mutex<Vec<PendingResponse>>> =
         Arc::new(Mutex::new(vec![]));
 }
 
-async fn set_pending_response(response: PendingResponse) {
+async fn set_pending_response(response: Vec<PendingResponse>) {
     let pending_response_guard = PENDING_RESPONSE.with(|pr| pr.clone());
     let mut pending_response = pending_response_guard.lock().await;
     *pending_response = response;
@@ -56,6 +65,37 @@ pub(crate) async fn http_client(openid_request: HttpRequest) -> Result<HttpRespo
     response
 }
 
+fn create_discovery_response() -> PendingResponse {
+    (
+        "https://localhost/issuer_url/.well-known/openid-configuration".to_string(),
+        Ok(HttpResponse {
+            status_code: http::StatusCode::OK,
+            headers: http::HeaderMap::new(),
+            body: "{
+                \"issuer\":\"https://localhost/issuer_url\",
+                \"authorization_endpoint\":\"https://localhost/authorization\",
+                \"jwks_uri\":\"https://localhost/jwks\",
+                \"response_types_supported\":[\"code\"],
+                \"subject_types_supported\":[\"public\"],
+                \"id_token_signing_alg_values_supported\":[\"RS256\"]
+            }"
+            .as_bytes()
+            .into(),
+        }),
+    )
+}
+
+fn create_jwks_response() -> PendingResponse {
+    (
+        "https://localhost/jwks".to_string(),
+        Ok(HttpResponse {
+            status_code: http::StatusCode::OK,
+            headers: http::HeaderMap::new(),
+            body: "{\"keys\":[]}".as_bytes().into(),
+        }),
+    )
+}
+
 #[async_std::test]
 async fn unauthed_request_redirects_to_login_uri() -> tide::Result<()> {
     let mut app = tide::new();
@@ -64,48 +104,10 @@ async fn unauthed_request_redirects_to_login_uri() -> tide::Result<()> {
         &SECRET,
     ));
 
-    set_pending_response(vec![
-        (
-            "https://localhost/issuer_url/.well-known/openid-configuration".to_string(),
-            Ok(HttpResponse {
-                status_code: http::StatusCode::OK,
-                headers: http::HeaderMap::new(),
-                body: "{
-                    \"issuer\":\"https://localhost/issuer_url\",
-                    \"authorization_endpoint\":\"https://localhost/authorization\",
-                    \"jwks_uri\":\"https://localhost/jwks\",
-                    \"response_types_supported\":[\"code\"],
-                    \"subject_types_supported\":[\"public\"],
-                    \"id_token_signing_alg_values_supported\":[\"RS256\"]
-                }"
-                .as_bytes()
-                .into(),
-            }),
-        ),
-        (
-            "https://localhost/jwks".to_string(),
-            Ok(HttpResponse {
-                status_code: http::StatusCode::OK,
-                headers: http::HeaderMap::new(),
-                body: "{\"keys\":[]}".as_bytes().into(),
-            }),
-        ),
-    ])
-    .await;
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
 
-    // TODO Maybe have an `async fn with_provider_metadata(IssuerUrl)`
-    // that is for "normal" use, but then also a ... `with_config()`
-    // or something function that can be used if you do *not* have a
-    // provider endpoint (and for unit tests)? And then we just use
-    // that function here after verifying that provider metadata works...
     app.with(
-        OpenIdConnectMiddleware::new(
-            IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap(),
-            ClientId::new("CLIENT-ID".to_string()),
-            ClientSecret::new("CLIENT-SECRET".to_string()),
-            RedirectUrl::new("https://localhost/callback".to_string()).unwrap(),
-        )
-        .await,
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
     );
 
     app.at("/")
@@ -128,42 +130,9 @@ async fn unauthed_request_redirects_to_login_uri() -> tide::Result<()> {
 
 #[async_std::test]
 async fn middleware_can_be_initialized() -> tide::Result<()> {
-    set_pending_response(vec![
-        (
-            "https://localhost/issuer_url/.well-known/openid-configuration".to_string(),
-            Ok(HttpResponse {
-                status_code: http::StatusCode::OK,
-                headers: http::HeaderMap::new(),
-                body: "{
-                    \"issuer\":\"https://localhost/issuer_url\",
-                    \"authorization_endpoint\":\"https://localhost/authorization\",
-                    \"jwks_uri\":\"https://localhost/jwks\",
-                    \"response_types_supported\":[\"code\"],
-                    \"subject_types_supported\":[\"public\"],
-                    \"id_token_signing_alg_values_supported\":[\"RS256\"]
-                }"
-                .as_bytes()
-                .into(),
-            }),
-        ),
-        (
-            "https://localhost/jwks".to_string(),
-            Ok(HttpResponse {
-                status_code: http::StatusCode::OK,
-                headers: http::HeaderMap::new(),
-                body: "{\"keys\":[]}".as_bytes().into(),
-            }),
-        ),
-    ])
-    .await;
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
 
-    OpenIdConnectMiddleware::new(
-        IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap(),
-        ClientId::new("CLIENT-ID".to_string()),
-        ClientSecret::new("CLIENT-SECRET".to_string()),
-        RedirectUrl::new("https://localhost/callback".to_string()).unwrap(),
-    )
-    .await;
+    OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await;
 
     assert!(pending_response_is_empty().await);
 

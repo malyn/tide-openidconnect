@@ -61,10 +61,10 @@ enum MiddlewareSessionState {
 /// // file.
 /// app.with(
 ///     tide_openidconnect::OpenIdConnectMiddleware::new(
-///         tide_openidconnect::IssuerUrl::new("https://your-tenant-name.us.auth0.com/".to_string()).unwrap(),
-///         tide_openidconnect::ClientId::new("app-id-goes-here".to_string()),
-///         tide_openidconnect::ClientSecret::new("app-secret-goes-here".to_string()),
-///         tide_openidconnect::RedirectUrl::new("http://your.cool.site/callback".to_string()).unwrap(),
+///         &tide_openidconnect::IssuerUrl::new("https://your-tenant-name.us.auth0.com/".to_string()).unwrap(),
+///         &tide_openidconnect::ClientId::new("app-id-goes-here".to_string()),
+///         &tide_openidconnect::ClientSecret::new("app-secret-goes-here".to_string()),
+///         &tide_openidconnect::RedirectUrl::new("http://your.cool.site/callback".to_string()).unwrap(),
 ///     )
 ///     .await,
 /// );
@@ -110,20 +110,24 @@ impl OpenIdConnectMiddleware {
     /// - login path: "/login"
     /// - landing path: "/"
     pub async fn new(
-        issuer_url: IssuerUrl,
-        client_id: ClientId,
-        client_secret: ClientSecret,
-        redirect_url: RedirectUrl,
+        issuer_url: &IssuerUrl,
+        client_id: &ClientId,
+        client_secret: &ClientSecret,
+        redirect_url: &RedirectUrl,
     ) -> Self {
         // Get the OpenID Connect provider metadata.
-        let provider_metadata = CoreProviderMetadata::discover_async(issuer_url, http_client)
-            .await
-            .expect("Unable to load OpenID Connect provider metadata.");
+        let provider_metadata =
+            CoreProviderMetadata::discover_async(issuer_url.clone(), http_client)
+                .await
+                .expect("Unable to load OpenID Connect provider metadata.");
 
         // Create the OpenID Connect client.
-        let client =
-            CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret))
-                .set_redirect_uri(redirect_url.clone());
+        let client = CoreClient::from_provider_metadata(
+            provider_metadata,
+            client_id.clone(),
+            Some(client_secret.clone()),
+        )
+        .set_redirect_uri(redirect_url.clone());
 
         // Initialize the middleware with our defaults.
         let login_path = "/login".to_string();
@@ -131,6 +135,7 @@ impl OpenIdConnectMiddleware {
             login_path: login_path.clone(),
             scopes: vec![Scope::new("openid".to_string())],
             redirect_url,
+            redirect_url: redirect_url.clone(),
             landing_path: "/".to_string(),
             client,
             redirect_strategy: Arc::new(HttpRedirect::new(login_path)),
