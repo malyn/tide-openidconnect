@@ -19,6 +19,9 @@ pub mod redirect_strategy;
 mod request_ext;
 mod route_ext;
 
+#[cfg(test)]
+mod tests;
+
 pub use crate::middleware::OpenIdConnectMiddleware;
 pub use crate::request_ext::OpenIdConnectRequestExt;
 pub use crate::route_ext::OpenIdConnectRouteExt;
