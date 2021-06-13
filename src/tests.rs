@@ -4,10 +4,11 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_lock::Mutex;
 use async_std::prelude::*;
+use chrono::{Duration, Utc};
 use once_cell::sync::Lazy;
-use openidconnect::{HttpRequest, HttpResponse};
+use openidconnect::{core::CoreIdTokenClaims, HttpRequest, HttpResponse};
 use tide::{
-    http::headers::LOCATION,
+    http::headers::{COOKIE, LOCATION, SET_COOKIE},
     sessions::{MemoryStore, SessionMiddleware},
     Request, StatusCode,
 };
@@ -26,6 +27,18 @@ static CLIENT_SECRET: Lazy<ClientSecret> =
     Lazy::new(|| ClientSecret::new("CLIENT-SECRET".to_string()));
 static REDIRECT_URL: Lazy<RedirectUrl> =
     Lazy::new(|| RedirectUrl::new("https://localhost/callback".to_string()).unwrap());
+
+fn get_tidesid_cookie(response: &tide_testing::surf::Response) -> tide::http::Cookie {
+    tide::http::Cookie::parse(
+        response
+            .header(SET_COOKIE)
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .to_string(),
+    )
+    .unwrap()
+}
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -78,6 +91,7 @@ fn create_discovery_response() -> PendingResponse {
             body: "{
                 \"issuer\":\"https://localhost/issuer_url\",
                 \"authorization_endpoint\":\"https://localhost/authorization\",
+                \"token_endpoint\":\"https://localhost/token\",
                 \"jwks_uri\":\"https://localhost/jwks\",
                 \"response_types_supported\":[\"code\"],
                 \"subject_types_supported\":[\"public\"],
@@ -89,13 +103,58 @@ fn create_discovery_response() -> PendingResponse {
     )
 }
 
+// From here: <https://github.com/ramosbugs/openidconnect-rs/blob/cfa5af581ee100791f68bf099dd15fa3eb492c8b/src/jwt.rs#L489>
+const TEST_RSA_PUB_KEY: &str = "{
+            \"kty\": \"RSA\",
+            \"kid\": \"bilbo.baggins@hobbiton.example\",
+            \"use\": \"sig\",
+            \"n\": \"n4EPtAOCc9AlkeQHPzHStgAbgs7bTZLwUBZdR8_KuKPEHLd4rHVTeT\
+                     -O-XV2jRojdNhxJWTDvNd7nqQ0VEiZQHz_AJmSCpMaJMRBSFKrKb2wqV\
+                     wGU_NsYOYL-QtiWN2lbzcEe6XC0dApr5ydQLrHqkHHig3RBordaZ6Aj-\
+                     oBHqFEHYpPe7Tpe-OfVfHd1E6cS6M1FZcD1NNLYD5lFHpPI9bTwJlsde\
+                     3uhGqC0ZCuEHg8lhzwOHrtIQbS0FVbb9k3-tVTU4fg_3L_vniUFAKwuC\
+                     LqKnS2BYwdq_mzSnbLY7h_qixoR7jig3__kRhuaxwUkRz5iaiQkqgc5g\
+                     HdrNP5zw\",
+            \"e\": \"AQAB\"
+        }";
+
+const TEST_RSA_PRIV_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
+         MIIEowIBAAKCAQEAn4EPtAOCc9AlkeQHPzHStgAbgs7bTZLwUBZdR8/KuKPEHLd4\n\
+         rHVTeT+O+XV2jRojdNhxJWTDvNd7nqQ0VEiZQHz/AJmSCpMaJMRBSFKrKb2wqVwG\n\
+         U/NsYOYL+QtiWN2lbzcEe6XC0dApr5ydQLrHqkHHig3RBordaZ6Aj+oBHqFEHYpP\n\
+         e7Tpe+OfVfHd1E6cS6M1FZcD1NNLYD5lFHpPI9bTwJlsde3uhGqC0ZCuEHg8lhzw\n\
+         OHrtIQbS0FVbb9k3+tVTU4fg/3L/vniUFAKwuCLqKnS2BYwdq/mzSnbLY7h/qixo\n\
+         R7jig3//kRhuaxwUkRz5iaiQkqgc5gHdrNP5zwIDAQABAoIBAG1lAvQfhBUSKPJK\n\
+         Rn4dGbshj7zDSr2FjbQf4pIh/ZNtHk/jtavyO/HomZKV8V0NFExLNi7DUUvvLiW7\n\
+         0PgNYq5MDEjJCtSd10xoHa4QpLvYEZXWO7DQPwCmRofkOutf+NqyDS0QnvFvp2d+\n\
+         Lov6jn5C5yvUFgw6qWiLAPmzMFlkgxbtjFAWMJB0zBMy2BqjntOJ6KnqtYRMQUxw\n\
+         TgXZDF4rhYVKtQVOpfg6hIlsaoPNrF7dofizJ099OOgDmCaEYqM++bUlEHxgrIVk\n\
+         wZz+bg43dfJCocr9O5YX0iXaz3TOT5cpdtYbBX+C/5hwrqBWru4HbD3xz8cY1TnD\n\
+         qQa0M8ECgYEA3Slxg/DwTXJcb6095RoXygQCAZ5RnAvZlno1yhHtnUex/fp7AZ/9\n\
+         nRaO7HX/+SFfGQeutao2TDjDAWU4Vupk8rw9JR0AzZ0N2fvuIAmr/WCsmGpeNqQn\n\
+         ev1T7IyEsnh8UMt+n5CafhkikzhEsrmndH6LxOrvRJlsPp6Zv8bUq0kCgYEAuKE2\n\
+         dh+cTf6ERF4k4e/jy78GfPYUIaUyoSSJuBzp3Cubk3OCqs6grT8bR/cu0Dm1MZwW\n\
+         mtdqDyI95HrUeq3MP15vMMON8lHTeZu2lmKvwqW7anV5UzhM1iZ7z4yMkuUwFWoB\n\
+         vyY898EXvRD+hdqRxHlSqAZ192zB3pVFJ0s7pFcCgYAHw9W9eS8muPYv4ZhDu/fL\n\
+         2vorDmD1JqFcHCxZTOnX1NWWAj5hXzmrU0hvWvFC0P4ixddHf5Nqd6+5E9G3k4E5\n\
+         2IwZCnylu3bqCWNh8pT8T3Gf5FQsfPT5530T2BcsoPhUaeCnP499D+rb2mTnFYeg\n\
+         mnTT1B/Ue8KGLFFfn16GKQKBgAiw5gxnbocpXPaO6/OKxFFZ+6c0OjxfN2PogWce\n\
+         TU/k6ZzmShdaRKwDFXisxRJeNQ5Rx6qgS0jNFtbDhW8E8WFmQ5urCOqIOYk28EBi\n\
+         At4JySm4v+5P7yYBh8B8YD2l9j57z/s8hJAxEbn/q8uHP2ddQqvQKgtsni+pHSk9\n\
+         XGBfAoGBANz4qr10DdM8DHhPrAb2YItvPVz/VwkBd1Vqj8zCpyIEKe/07oKOvjWQ\n\
+         SgkLDH9x2hBgY01SbP43CvPk0V72invu2TGkI/FXwXWJLLG7tDSgw4YyfhrYrHmg\n\
+         1Vre3XB9HH8MYBVB6UIexaAq4xSeoemRKTBesZro7OKjKT8/GmiO\
+         -----END RSA PRIVATE KEY-----";
+
 fn create_jwks_response() -> PendingResponse {
     (
         "https://localhost/jwks".to_string(),
         Ok(HttpResponse {
             status_code: http::StatusCode::OK,
             headers: http::HeaderMap::new(),
-            body: "{\"keys\":[]}".as_bytes().into(),
+            body: format!("{{\"keys\":[{}]}}", TEST_RSA_PUB_KEY)
+                .as_bytes()
+                .into(),
         }),
     )
 }
@@ -255,8 +314,88 @@ async fn login_panics_on_missing_session_middleware() {
     let _result = app.get("/login").await;
 }
 
-// async fn middleware_provides_redirect_route() -> tide::Result<()> {
 // Request to redirect_url (with the authorization code and stuff): checks the nonce and CSRF, makes the token call, sets session state, can get req.user_id() or whatever.
+#[async_std::test]
+async fn middleware_provides_redirect_route() -> tide::Result<()> {
+    let mut app = tide::new();
+    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    // TODO Maybe *also* have the `/` route *not* require authentication and assert that there is no user id *before* auth happens?
+
+    let login_res = app.get("/login").await?;
+    assert_eq!(login_res.status(), StatusCode::Found);
+    let authorize_url =
+        ParsedAuthorizeUrl::from_url(login_res.header(LOCATION).unwrap().get(0).unwrap().as_str());
+    let state = authorize_url.state.clone().unwrap().to_string();
+    let nonce = authorize_url.nonce.clone().unwrap();
+    assert_eq!(
+        authorize_url.with_nonce(None).with_state(None),
+        ParsedAuthorizeUrl::default(),
+    );
+    // TODO Can we automate this somehow? Create some helper that auto-flows
+    // the tide.sid cookie across requests? Maybe we just manually reimplement
+    // tide-testing here, but have it auto-flow cookies if you provide the
+    // previous/initial response...
+    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&login_res);
+
+    // TODO Factor this entire block out into a `create_id_token` function.
+    let claims = CoreIdTokenClaims::new(
+        IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap(),
+        vec![openidconnect::Audience::new(CLIENT_ID.to_string())],
+        Utc::now().checked_add_signed(Duration::hours(1)).unwrap(),
+        Utc::now(),
+        openidconnect::StandardClaims::new(openidconnect::SubjectIdentifier::new(
+            "1234567890".to_string(),
+        )),
+        openidconnect::EmptyAdditionalClaims {},
+    )
+    .set_nonce(Some(openidconnect::Nonce::new(nonce)));
+
+    let id_token = openidconnect::core::CoreIdToken::new(
+        claims,
+        &openidconnect::core::CoreRsaPrivateSigningKey::from_pem(TEST_RSA_PRIV_KEY, None).unwrap(),
+        openidconnect::core::CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // TODO Factor this out into an `create_id_token_response` function.
+    set_pending_response(vec![(
+        "https://localhost/token".to_string(),
+        Ok(HttpResponse {
+            status_code: http::StatusCode::OK,
+            headers: http::HeaderMap::new(),
+            body: format!(
+                "{{
+                    \"access_token\":\"immatoken\",
+                    \"token_type\":\"bearer\",
+                    \"id_token\":{}
+                }}",
+                serde_json::to_string(&id_token).unwrap()
+            )
+            .as_bytes()
+            .into(),
+        }),
+    )])
+    .await;
+
+    let callback_res = app
+        .get(format!("/callback?code=12345&state={}", state))
+        .header(COOKIE, session_cookie.to_string())
+        .await?;
+    assert_eq!(callback_res.status(), StatusCode::Found);
+    assert_eq!(callback_res.header(LOCATION).unwrap().get(0).unwrap(), "/");
+
+    // TODO Add an actual `/` route that verifies that the user is signed in?
+
+    Ok(())
+}
 
 // async fn redirect_route_rejects_invalid_csrf() -> tide::Result<()> {
 // Same as above but with a non-matching CSRF: error.
