@@ -327,6 +327,7 @@ async fn login_panics_on_missing_session_middleware() {
 // Request to redirect_url (with the authorization code and stuff): checks the nonce and CSRF, makes the token call, sets session state, can get req.user_id() or whatever.
 #[async_std::test]
 async fn middleware_provides_redirect_route() -> tide::Result<()> {
+    tide::log::with_level(tide::log::LevelFilter::Warn);
     let mut app = tide::new();
     app.with(
         SessionMiddleware::new(MemoryStore::new(), &SECRET)
