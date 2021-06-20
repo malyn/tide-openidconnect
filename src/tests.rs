@@ -532,13 +532,45 @@ async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
     Ok(())
 }
 
-// async fn redirect_route_errors_on_missing_session_middleware() -> tide::Result<()> {
-// *Error* (not panic) on missing session middleware, since this is indistinguishable from an expired session that was simply not present in the session store.
-// I *think.* Let's verify that this is in fact what happens, because maybe we want one version that panics (if we can in fact detect that the session middleware is missing).
+#[async_std::test]
+async fn redirect_route_errors_on_missing_session_data() -> tide::Result<()> {
+    // tide::log::with_level(tide::log::LevelFilter::Warn);
+    let mut app = tide::new();
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
-// TODO Add a big separator block here to show that we are now testing the route extensions.
-// async fn unauthenticated_routes_do_not_force_login() -> tide::Result<()> {
-// Basically: a request to a random /foo URL works.
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    // Skip straight to the callback path, since the point of this test
+    // is to confirm that missing session data (either an invalid tide.sid
+    // cookie, or simply jumping straight to the calback) generates an
+    // error, not a panic.
+    let res = app.get("/callback?code=12345&state=CSRFSTATE").await?;
+    assert_eq!(res.status(), StatusCode::InternalServerError);
+
+    Ok(())
+}
+
+#[async_std::test]
+#[should_panic(
+    expected = "request session not initialized, did you enable tide::sessions::SessionMiddleware?"
+)]
+async fn redirect_route_panics_on_missing_session_middleware() {
+    let mut app = tide::new();
+    // Note: *No* session middleware was added to the server.
+
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    let _result = app.get("/callback?code=12345&state=CSRFSTATE").await;
+}
 
 #[async_std::test]
 async fn authenticated_routes_require_login() -> tide::Result<()> {
@@ -570,6 +602,3 @@ async fn authenticated_routes_require_login() -> tide::Result<()> {
 
     Ok(())
 }
-
-// async fn authenticated_and_unauthenticated_routes_can_coexist() -> tide::Result<()> {
-// Basically: two routes, one that works and one that redirects to /login.

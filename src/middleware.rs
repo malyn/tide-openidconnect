@@ -209,7 +209,7 @@ impl OpenIdConnectMiddleware {
                 SESSION_KEY,
                 MiddlewareSessionState::PreAuth(csrf_token, nonce),
             )
-            .expect("OpenIdConnectMiddleware also requires SessionMiddleware.");
+            .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
 
         Ok(Redirect::new(&authorize_url).into())
     }
@@ -280,7 +280,7 @@ impl OpenIdConnectMiddleware {
                     SESSION_KEY,
                     MiddlewareSessionState::PostAuth(claims.subject().clone()),
                 )
-                .expect("OpenIdConnectMiddleware also requires SessionMiddleware.");
+                .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
 
             // The user has logged in; redirect them to the main site.
             Ok(Redirect::new(&self.landing_path).into())
