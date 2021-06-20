@@ -371,7 +371,7 @@ async fn login_panics_on_missing_session_middleware() {
 
 #[async_std::test]
 async fn middleware_provides_redirect_route() -> tide::Result<()> {
-    tide::log::with_level(tide::log::LevelFilter::Warn);
+    // tide::log::with_level(tide::log::LevelFilter::Warn);
     let mut app = tide::new();
     app.with(
         SessionMiddleware::new(MemoryStore::new(), &SECRET)
