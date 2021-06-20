@@ -15,7 +15,8 @@ use tide::{
 use tide_testing::TideTestingExt;
 
 use crate::{
-    ClientId, ClientSecret, IssuerUrl, OpenIdConnectMiddleware, OpenIdConnectRouteExt, RedirectUrl,
+    ClientId, ClientSecret, IssuerUrl, OpenIdConnectMiddleware, OpenIdConnectRequestExt,
+    OpenIdConnectRouteExt, RedirectUrl,
 };
 
 const SECRET: [u8; 32] = *b"secrets must be >= 32 bytes long";
@@ -231,7 +232,10 @@ async fn middleware_can_be_initialized() -> tide::Result<()> {
 #[async_std::test]
 async fn middleware_provides_login_route() -> tide::Result<()> {
     let mut app = tide::new();
-    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
@@ -253,7 +257,10 @@ async fn middleware_provides_login_route() -> tide::Result<()> {
 #[async_std::test]
 async fn login_path_can_be_changed() -> tide::Result<()> {
     let mut app = tide::new();
-    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
@@ -277,7 +284,10 @@ async fn login_path_can_be_changed() -> tide::Result<()> {
 #[async_std::test]
 async fn oauth_scopes_can_be_changed() -> tide::Result<()> {
     let mut app = tide::new();
-    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
@@ -318,19 +328,42 @@ async fn login_panics_on_missing_session_middleware() {
 #[async_std::test]
 async fn middleware_provides_redirect_route() -> tide::Result<()> {
     let mut app = tide::new();
-    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
         OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
     );
 
-    // TODO Maybe *also* have the `/` route *not* require authentication and assert that there is no user id *before* auth happens?
+    // Add the `/` route, which we use to check the authed/unauthed status
+    // status of the request. Note that we would also like to use this
+    // handler to confirm that session state is preserved across the auth
+    // procedure (which it is), but that behavior is mostly a side-effect
+    // of the SessionMiddleware's cookie setting (which *this* middleware
+    // requires be set to Lax). So we could test that, but A) we would
+    // only be testing that we set that to Lax earlier in this test function,
+    // and more importantly B) wouldn't actually be testing the SameSite
+    // setting anyway, since we are manually flowing the session cookie
+    // across requests without even paying attention to the SameSite attribute
+    // in the response.
+    app.at("/").get(|req: Request<()>| async move {
+        Ok(match req.user_id() {
+            Some(userid) => format!("authed {}", userid),
+            None => "unauthed".to_string(),
+        })
+    });
 
-    let login_res = app.get("/login").await?;
-    assert_eq!(login_res.status(), StatusCode::Found);
+    let mut res = app.get("/").await?;
+    assert_eq!(res.status(), StatusCode::Ok);
+    assert_eq!(res.body_string().await?, "unauthed");
+
+    let res = app.get("/login").await?;
+    assert_eq!(res.status(), StatusCode::Found);
     let authorize_url =
-        ParsedAuthorizeUrl::from_url(login_res.header(LOCATION).unwrap().get(0).unwrap().as_str());
+        ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str());
     let state = authorize_url.state.clone().unwrap().to_string();
     let nonce = authorize_url.nonce.clone().unwrap();
     assert_eq!(
@@ -340,8 +373,13 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     // TODO Can we automate this somehow? Create some helper that auto-flows
     // the tide.sid cookie across requests? Maybe we just manually reimplement
     // tide-testing here, but have it auto-flow cookies if you provide the
-    // previous/initial response...
-    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&login_res);
+    // previous/initial response... Maybe we do this using middleware, per
+    // [this issue](https://github.com/http-rs/surf/issues/19)? In our case,
+    // we replace tide-testing with our own custom thing, that uses middleware
+    // for the cookie jar. Basically you: create the client (attached to a
+    // server), add the cookie jar middleware, then send requests with that
+    // client, which accumulate and send cookies with each request.
+    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
 
     // TODO Factor this entire block out into a `create_id_token` function.
     let claims = CoreIdTokenClaims::new(
@@ -385,14 +423,19 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     )])
     .await;
 
-    let callback_res = app
+    let res = app
         .get(format!("/callback?code=12345&state={}", state))
         .header(COOKIE, session_cookie.to_string())
         .await?;
-    assert_eq!(callback_res.status(), StatusCode::Found);
-    assert_eq!(callback_res.header(LOCATION).unwrap().get(0).unwrap(), "/");
+    assert_eq!(res.status(), StatusCode::Found);
+    assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap(), "/");
 
-    // TODO Add an actual `/` route that verifies that the user is signed in?
+    let mut res = app
+        .get("/")
+        .header(COOKIE, session_cookie.to_string())
+        .await?;
+    assert_eq!(res.status(), StatusCode::Ok);
+    assert_eq!(res.body_string().await?, "authed 1234567890");
 
     Ok(())
 }
@@ -414,7 +457,10 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
 #[async_std::test]
 async fn authenticated_routes_require_login() -> tide::Result<()> {
     let mut app = tide::new();
-    app.with(SessionMiddleware::new(MemoryStore::new(), &SECRET));
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
