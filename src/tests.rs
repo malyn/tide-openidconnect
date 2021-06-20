@@ -458,11 +458,79 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     Ok(())
 }
 
-// async fn redirect_route_rejects_invalid_csrf() -> tide::Result<()> {
-// Same as above but with a non-matching CSRF: error.
+#[async_std::test]
+async fn redirect_route_rejects_invalid_csrf() -> tide::Result<()> {
+    // tide::log::with_level(tide::log::LevelFilter::Warn);
+    let mut app = tide::new();
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
 
-// async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
-// Same as above but with a non-matching nonce: error.
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    // Navigate to the login path, which generates a redirect to the
+    // authentication provider. Note that we do not need to confirm the
+    // shape of the redirect URL (that happens in other tests), but we
+    // do need to make this call in order to properly set up the session
+    // state (which contains the CSRF state against which we will verify
+    // the state in the callback).
+    let res = app.get("/login").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
+
+    // Issue the callback to our middleware, *but with a mismatched CSRF
+    // state.* The request will be rejected before we even make the call
+    // to the auth provider (hence no need to set up an auth provider
+    // response).
+    let res = app
+        .get("/callback?code=12345&state=BADCSRFSTATE")
+        .header(COOKIE, session_cookie.to_string())
+        .await?;
+    assert_eq!(res.status(), StatusCode::Unauthorized);
+
+    Ok(())
+}
+
+#[async_std::test]
+async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
+    // tide::log::with_level(tide::log::LevelFilter::Warn);
+    let mut app = tide::new();
+    app.with(
+        SessionMiddleware::new(MemoryStore::new(), &SECRET)
+            .with_same_site_policy(tide::http::cookies::SameSite::Lax),
+    );
+
+    set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
+    app.with(
+        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
+    );
+
+    // Navigate to the login path, which should generate a redirect to the
+    // authentication provider. We extract the state from this redirect
+    // so that the test can pass that to the callback URI.
+    let res = app.get("/login").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+    let authorize_url =
+        ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str());
+    let state = authorize_url.state.clone().unwrap().to_string();
+    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
+
+    // Prepare the auth provider's token response, *but with a different
+    // nonce,* then issue the callback to our middleware. That request
+    set_pending_response(vec![create_id_token_response("userid", "BADNONCE")]).await;
+
+    let res = app
+        .get(format!("/callback?code=12345&state={}", state))
+        .header(COOKIE, session_cookie.to_string())
+        .await?;
+    assert_eq!(res.status(), StatusCode::Unauthorized);
+
+    Ok(())
+}
 
 // async fn redirect_route_errors_on_missing_session_middleware() -> tide::Result<()> {
 // *Error* (not panic) on missing session middleware, since this is indistinguishable from an expired session that was simply not present in the session store.
