@@ -160,6 +160,51 @@ fn create_jwks_response() -> PendingResponse {
     )
 }
 
+fn create_id_token(userid: impl AsRef<str>, nonce: impl AsRef<str>) -> String {
+    let claims = CoreIdTokenClaims::new(
+        IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap(),
+        vec![openidconnect::Audience::new(CLIENT_ID.to_string())],
+        Utc::now().checked_add_signed(Duration::hours(1)).unwrap(),
+        Utc::now(),
+        openidconnect::StandardClaims::new(openidconnect::SubjectIdentifier::new(
+            userid.as_ref().to_string(),
+        )),
+        openidconnect::EmptyAdditionalClaims {},
+    )
+    .set_nonce(Some(openidconnect::Nonce::new(nonce.as_ref().to_string())));
+
+    let id_token = openidconnect::core::CoreIdToken::new(
+        claims,
+        &openidconnect::core::CoreRsaPrivateSigningKey::from_pem(TEST_RSA_PRIV_KEY, None).unwrap(),
+        openidconnect::core::CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
+        None,
+        None,
+    )
+    .unwrap();
+
+    serde_json::to_string(&id_token).unwrap()
+}
+
+fn create_id_token_response(userid: impl AsRef<str>, nonce: impl AsRef<str>) -> PendingResponse {
+    (
+        "https://localhost/token".to_string(),
+        Ok(HttpResponse {
+            status_code: http::StatusCode::OK,
+            headers: http::HeaderMap::new(),
+            body: format!(
+                "{{
+                    \"access_token\":\"immatoken\",
+                    \"token_type\":\"bearer\",
+                    \"id_token\":{}
+                }}",
+                create_id_token(userid, nonce)
+            )
+            .as_bytes()
+            .into(),
+        }),
+    )
+}
+
 #[derive(Debug, PartialEq)]
 struct ParsedAuthorizeUrl {
     host: String,
@@ -324,7 +369,6 @@ async fn login_panics_on_missing_session_middleware() {
     let _result = app.get("/login").await;
 }
 
-// Request to redirect_url (with the authorization code and stuff): checks the nonce and CSRF, makes the token call, sets session state, can get req.user_id() or whatever.
 #[async_std::test]
 async fn middleware_provides_redirect_route() -> tide::Result<()> {
     tide::log::with_level(tide::log::LevelFilter::Warn);
@@ -357,10 +401,16 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
         })
     });
 
+    // An initial check of our normal route should show that the request
+    // (session, really) is not yet authenticated.
     let mut res = app.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(res.body_string().await?, "unauthed");
 
+    // Navigate to the login path, which should generate a redirect to the
+    // authentication provider. We extract the state and nonce from this
+    // redirect so that the test can generate the proper auth provider
+    // response during the token exchange request.
     let res = app.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
     let authorize_url =
@@ -382,47 +432,12 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     // client, which accumulate and send cookies with each request.
     let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
 
-    // TODO Factor this entire block out into a `create_id_token` function.
-    let claims = CoreIdTokenClaims::new(
-        IssuerUrl::new("https://localhost/issuer_url".to_string()).unwrap(),
-        vec![openidconnect::Audience::new(CLIENT_ID.to_string())],
-        Utc::now().checked_add_signed(Duration::hours(1)).unwrap(),
-        Utc::now(),
-        openidconnect::StandardClaims::new(openidconnect::SubjectIdentifier::new(
-            "1234567890".to_string(),
-        )),
-        openidconnect::EmptyAdditionalClaims {},
-    )
-    .set_nonce(Some(openidconnect::Nonce::new(nonce)));
-
-    let id_token = openidconnect::core::CoreIdToken::new(
-        claims,
-        &openidconnect::core::CoreRsaPrivateSigningKey::from_pem(TEST_RSA_PRIV_KEY, None).unwrap(),
-        openidconnect::core::CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
-        None,
-        None,
-    )
-    .unwrap();
-
-    // TODO Factor this out into an `create_id_token_response` function.
-    set_pending_response(vec![(
-        "https://localhost/token".to_string(),
-        Ok(HttpResponse {
-            status_code: http::StatusCode::OK,
-            headers: http::HeaderMap::new(),
-            body: format!(
-                "{{
-                    \"access_token\":\"immatoken\",
-                    \"token_type\":\"bearer\",
-                    \"id_token\":{}
-                }}",
-                serde_json::to_string(&id_token).unwrap()
-            )
-            .as_bytes()
-            .into(),
-        }),
-    )])
-    .await;
+    // Prepare the auth provider's token response, then issue the callback
+    // to our middleware, which completes the authentication process (by
+    // exchaning the code for a token) and then redirects to the landing
+    // path.
+    let userid = "1234567890";
+    set_pending_response(vec![create_id_token_response(userid, nonce)]).await;
 
     let res = app
         .get(format!("/callback?code=12345&state={}", state))
@@ -431,12 +446,14 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     assert_eq!(res.status(), StatusCode::Found);
     assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap(), "/");
 
+    // A final check of our normal route should show that the request
+    // (session, really) is authenticated, and contains the user id.
     let mut res = app
         .get("/")
         .header(COOKIE, session_cookie.to_string())
         .await?;
     assert_eq!(res.status(), StatusCode::Ok);
-    assert_eq!(res.body_string().await?, "authed 1234567890");
+    assert_eq!(res.body_string().await?, format!("authed {}", userid));
 
     Ok(())
 }
