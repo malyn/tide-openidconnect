@@ -4,8 +4,8 @@ use crate::redirect_strategy::{HttpRedirect, RedirectStrategy};
 use crate::request_ext::OpenIdConnectRequestExtData;
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-    OAuth2TokenResponse, RedirectUrl, Scope, SubjectIdentifier,
+    AccessToken, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
+    IssuerUrl, Nonce, OAuth2TokenResponse, RedirectUrl, Scope, SubjectIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
@@ -36,7 +36,7 @@ const SESSION_KEY: &str = "tide.oidc";
 #[derive(Debug, Deserialize, Serialize)]
 enum MiddlewareSessionState {
     PreAuth(CsrfToken, Nonce),
-    PostAuth(SubjectIdentifier),
+    PostAuth(SubjectIdentifier, AccessToken),
 }
 
 /// # Middleware to enable OpenID Connect-based authentication
@@ -278,7 +278,10 @@ impl OpenIdConnectMiddleware {
             req.session_mut()
                 .insert(
                     SESSION_KEY,
-                    MiddlewareSessionState::PostAuth(claims.subject().clone()),
+                    MiddlewareSessionState::PostAuth(
+                        claims.subject().clone(),
+                        token_response.access_token().clone(),
+                    ),
                 )
                 .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
 
@@ -320,9 +323,10 @@ where
             // process), then augment the request with the authentication
             // status.
             match req.session().get(SESSION_KEY) {
-                Some(MiddlewareSessionState::PostAuth(subject)) => {
+                Some(MiddlewareSessionState::PostAuth(subject, access_token)) => {
                     req.set_ext(OpenIdConnectRequestExtData::Authenticated {
                         user_id: subject.to_string(),
+                        access_token: access_token.secret().to_string(),
                     })
                 }
                 _ => req.set_ext(OpenIdConnectRequestExtData::Unauthenticated {

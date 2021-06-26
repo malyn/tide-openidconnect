@@ -13,7 +13,7 @@ where
         // the next item in the middleware chain. Otherwise, redirect the
         // browser to the login page.
         match req.auth_state() {
-            OpenIdConnectRequestExtData::Authenticated { user_id: _ } => {
+            OpenIdConnectRequestExtData::Authenticated { .. } => {
                 tide::log::debug!(
                     "Authenticated request; forwarding request to next item in middleware chain."
                 );
@@ -38,7 +38,6 @@ pub trait OpenIdConnectRouteExt {
 
 impl<'a, State: Clone + Send + Sync + 'static> OpenIdConnectRouteExt for Route<'a, State> {
     fn authenticated(&mut self) -> &mut Self {
-        println!("authenticated() called on {}", self.path());
         self.with(MustAuthenticateMiddleware {})
     }
 }

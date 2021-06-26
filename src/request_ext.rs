@@ -4,16 +4,21 @@ use crate::redirect_strategy::RedirectStrategy;
 use tide::Request;
 
 pub(crate) enum OpenIdConnectRequestExtData {
-    Authenticated {
-        user_id: String,
-    },
     Unauthenticated {
         redirect_strategy: Arc<dyn RedirectStrategy>,
+    },
+    Authenticated {
+        access_token: String,
+        user_id: String,
     },
 }
 
 /// Provides access to request-level OpenID Connect authorization data.
 pub trait OpenIdConnectRequestExt {
+    /// Gets the access token for the authenticated user, or None if the
+    /// request has not been authenticated.
+    fn access_token(&self) -> Option<String>;
+
     /// Gets the provider-specific user id of the authenticated user, or
     /// None if the request has not been authenticated.
     fn user_id(&self) -> Option<String>;
@@ -23,9 +28,18 @@ impl<State> OpenIdConnectRequestExt for Request<State>
 where
     State: Send + Sync + 'static,
 {
+    fn access_token(&self) -> Option<String> {
+        match self.auth_state() {
+            OpenIdConnectRequestExtData::Authenticated { access_token, .. } => {
+                Some(access_token.clone())
+            }
+            _ => None,
+        }
+    }
+
     fn user_id(&self) -> Option<String> {
         match self.auth_state() {
-            OpenIdConnectRequestExtData::Authenticated { user_id } => Some(user_id.clone()),
+            OpenIdConnectRequestExtData::Authenticated { user_id, .. } => Some(user_id.clone()),
             _ => None,
         }
     }
