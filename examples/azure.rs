@@ -20,16 +20,7 @@ async fn main() -> tide::Result<()> {
         .with_same_site_policy(tide::http::cookies::SameSite::Lax),
     );
 
-    app.with(
-        tide_openidconnect::OpenIdConnectMiddleware::new(
-            &cfg.azure_issuer_url,
-            &cfg.azure_client_id,
-            &cfg.azure_client_secret,
-            &tide_openidconnect::RedirectUrl::new("http://localhost:8000/callback".to_string())
-                .unwrap(),
-        )
-        .await,
-    );
+    app.with(tide_openidconnect::OpenIdConnectMiddleware::new(&cfg.azure).await);
 
     app.at("/").authenticated().get(|req: tide::Request<()>| async move {
         // Use the access token to fetch the user's profile from Microsoft
@@ -54,21 +45,13 @@ async fn main() -> tide::Result<()> {
 #[derive(Debug, Deserialize)]
 struct Config {
     tide_secret: String,
-
-    // TODO Move all of these into a `tide_oidc::Config` struct (and add
-    // things like `login_url` and `redirect_url` and stuff, which should
-    // be `Option<String>` since we will default to `/login` *et al*) and
-    // then use the dotenv crate's double-underscore thing to load them
-    // through names like `OPENID__ISSUER_URL` and stuff.
-    azure_issuer_url: tide_openidconnect::IssuerUrl,
-    azure_client_id: tide_openidconnect::ClientId,
-    azure_client_secret: tide_openidconnect::ClientSecret,
+    azure: tide_openidconnect::Config,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, config::ConfigError> {
         let mut cfg = config::Config::new();
-        cfg.merge(config::Environment::new())?;
+        cfg.merge(config::Environment::new().separator("__"))?;
         cfg.try_into()
     }
 }

@@ -15,7 +15,7 @@ use tide::{
 use tide_testing::TideTestingExt;
 
 use crate::{
-    ClientId, ClientSecret, IssuerUrl, OpenIdConnectMiddleware, OpenIdConnectRequestExt,
+    ClientId, ClientSecret, Config, IssuerUrl, OpenIdConnectMiddleware, OpenIdConnectRequestExt,
     OpenIdConnectRouteExt, RedirectUrl,
 };
 
@@ -28,6 +28,13 @@ static CLIENT_SECRET: Lazy<ClientSecret> =
     Lazy::new(|| ClientSecret::new("CLIENT-SECRET".to_string()));
 static REDIRECT_URL: Lazy<RedirectUrl> =
     Lazy::new(|| RedirectUrl::new("https://localhost/callback".to_string()).unwrap());
+
+static DEFAULT_CONFIG: Lazy<Config> = Lazy::new(|| Config {
+    issuer_url: ISSUER_URL.clone(),
+    client_id: CLIENT_ID.clone(),
+    client_secret: CLIENT_SECRET.clone(),
+    redirect_url: REDIRECT_URL.clone(),
+});
 
 fn get_tidesid_cookie(response: &tide_testing::surf::Response) -> tide::http::Cookie {
     tide::http::Cookie::parse(
@@ -267,7 +274,7 @@ impl ParsedAuthorizeUrl {
 async fn middleware_can_be_initialized() -> tide::Result<()> {
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
 
-    OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await;
+    OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await;
 
     assert!(pending_response_is_empty().await);
 
@@ -283,9 +290,7 @@ async fn middleware_provides_login_route() -> tide::Result<()> {
     );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     let res = app.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
@@ -309,7 +314,7 @@ async fn login_path_can_be_changed() -> tide::Result<()> {
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL)
+        OpenIdConnectMiddleware::new(&DEFAULT_CONFIG)
             .await
             .with_login_path("/oauthlogin"),
     );
@@ -336,7 +341,7 @@ async fn oauth_scopes_can_be_changed() -> tide::Result<()> {
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL)
+        OpenIdConnectMiddleware::new(&DEFAULT_CONFIG)
             .await
             .with_scopes(&["profile"]),
     );
@@ -362,9 +367,7 @@ async fn login_panics_on_missing_session_middleware() {
     // Note: *No* session middleware was added to the server.
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     let _result = app.get("/login").await;
 }
@@ -379,9 +382,7 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     // Add the `/` route, which we use to check the authed/unauthed status
     // status of the request. Note that we would also like to use this
@@ -468,9 +469,7 @@ async fn redirect_route_rejects_invalid_csrf() -> tide::Result<()> {
     );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     // Navigate to the login path, which generates a redirect to the
     // authentication provider. Note that we do not need to confirm the
@@ -505,9 +504,7 @@ async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
     );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     // Navigate to the login path, which should generate a redirect to the
     // authentication provider. We extract the state from this redirect
@@ -542,9 +539,7 @@ async fn redirect_route_errors_on_missing_session_data() -> tide::Result<()> {
     );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     // Skip straight to the callback path, since the point of this test
     // is to confirm that missing session data (either an invalid tide.sid
@@ -565,9 +560,7 @@ async fn redirect_route_panics_on_missing_session_middleware() {
     // Note: *No* session middleware was added to the server.
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     let _result = app.get("/callback?code=12345&state=CSRFSTATE").await;
 }
@@ -581,9 +574,7 @@ async fn authenticated_routes_require_login() -> tide::Result<()> {
     );
 
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
-    app.with(
-        OpenIdConnectMiddleware::new(&ISSUER_URL, &CLIENT_ID, &CLIENT_SECRET, &REDIRECT_URL).await,
-    );
+    app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
     app.at("/needsauth")
         .authenticated()
