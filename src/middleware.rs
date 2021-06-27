@@ -55,7 +55,7 @@ pub struct Config {
 #[derive(Debug, Deserialize, Serialize)]
 enum MiddlewareSessionState {
     PreAuth(CsrfToken, Nonce),
-    PostAuth(SubjectIdentifier, AccessToken),
+    PostAuth(SubjectIdentifier, AccessToken, Vec<Scope>),
 }
 
 /// # Middleware to enable OpenID Connect-based authentication
@@ -298,6 +298,7 @@ impl OpenIdConnectMiddleware {
                     MiddlewareSessionState::PostAuth(
                         claims.subject().clone(),
                         token_response.access_token().clone(),
+                        token_response.scopes().unwrap_or(&self.scopes).clone(),
                     ),
                 )
                 .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
@@ -340,12 +341,12 @@ where
             // process), then augment the request with the authentication
             // status.
             match req.session().get(SESSION_KEY) {
-                Some(MiddlewareSessionState::PostAuth(subject, access_token)) => {
-                    req.set_ext(OpenIdConnectRequestExtData::Authenticated {
+                Some(MiddlewareSessionState::PostAuth(subject, access_token, scopes)) => req
+                    .set_ext(OpenIdConnectRequestExtData::Authenticated {
                         user_id: subject.to_string(),
                         access_token: access_token.secret().to_string(),
-                    })
-                }
+                        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+                    }),
                 _ => req.set_ext(OpenIdConnectRequestExtData::Unauthenticated {
                     redirect_strategy: self.redirect_strategy.clone(),
                 }),

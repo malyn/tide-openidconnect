@@ -192,7 +192,12 @@ fn create_id_token(userid: impl AsRef<str>, nonce: impl AsRef<str>) -> String {
     serde_json::to_string(&id_token).unwrap()
 }
 
-fn create_id_token_response(userid: impl AsRef<str>, nonce: impl AsRef<str>) -> PendingResponse {
+fn create_id_token_response(
+    access_token: impl AsRef<str>,
+    scopes: impl AsRef<str>,
+    userid: impl AsRef<str>,
+    nonce: impl AsRef<str>,
+) -> PendingResponse {
     (
         "https://localhost/token".to_string(),
         Ok(HttpResponse {
@@ -200,10 +205,13 @@ fn create_id_token_response(userid: impl AsRef<str>, nonce: impl AsRef<str>) -> 
             headers: http::HeaderMap::new(),
             body: format!(
                 "{{
-                    \"access_token\":\"immatoken\",
+                    \"access_token\":\"{}\",
                     \"token_type\":\"bearer\",
+                    \"scope\":\"{}\",
                     \"id_token\":{}
                 }}",
+                access_token.as_ref(),
+                scopes.as_ref(),
                 create_id_token(userid, nonce)
             )
             .as_bytes()
@@ -397,7 +405,12 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     // in the response.
     app.at("/").get(|req: Request<()>| async move {
         Ok(match req.user_id() {
-            Some(userid) => format!("authed {}", userid),
+            Some(user_id) => format!(
+                "authed access_token={} scopes={:?} userid={}",
+                req.access_token().unwrap(),
+                req.scopes().unwrap(),
+                user_id
+            ),
             None => "unauthed".to_string(),
         })
     });
@@ -438,7 +451,10 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     // exchaning the code for a token) and then redirects to the landing
     // path.
     let userid = "1234567890";
-    set_pending_response(vec![create_id_token_response(userid, nonce)]).await;
+    set_pending_response(vec![create_id_token_response(
+        "atoken", "openid", userid, nonce,
+    )])
+    .await;
 
     let res = app
         .get(format!("/callback?code=12345&state={}", state))
@@ -454,7 +470,13 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
         .header(COOKIE, session_cookie.to_string())
         .await?;
     assert_eq!(res.status(), StatusCode::Ok);
-    assert_eq!(res.body_string().await?, format!("authed {}", userid));
+    assert_eq!(
+        res.body_string().await?,
+        format!(
+            "authed access_token=atoken scopes=[\"openid\"] userid={}",
+            userid
+        )
+    );
 
     Ok(())
 }
@@ -518,7 +540,10 @@ async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
 
     // Prepare the auth provider's token response, *but with a different
     // nonce,* then issue the callback to our middleware. That request
-    set_pending_response(vec![create_id_token_response("userid", "BADNONCE")]).await;
+    set_pending_response(vec![create_id_token_response(
+        "atoken", "openid", "userid", "BADNONCE",
+    )])
+    .await;
 
     let res = app
         .get(format!("/callback?code=12345&state={}", state))

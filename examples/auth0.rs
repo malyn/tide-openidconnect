@@ -23,7 +23,7 @@ async fn main() -> tide::Result<()> {
     app.with(tide_openidconnect::OpenIdConnectMiddleware::new(&cfg.auth0).await);
 
     app.at("/").authenticated().get(|req: tide::Request<()>| async move {
-        Ok(format!("This route requires authentication, and so I can say for sure that you have a user id: {}", req.user_id().unwrap()))
+        Ok(format!("This route requires authentication, and so I can say for sure that you have a user id: {} (scopes {:?})", req.user_id().unwrap(), req.scopes().unwrap()))
     });
 
     app.listen("127.0.0.1:8000").await?;

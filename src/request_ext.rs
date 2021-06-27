@@ -9,6 +9,7 @@ pub(crate) enum OpenIdConnectRequestExtData {
     },
     Authenticated {
         access_token: String,
+        scopes: Vec<String>,
         user_id: String,
     },
 }
@@ -18,6 +19,10 @@ pub trait OpenIdConnectRequestExt {
     /// Gets the access token for the authenticated user, or None if the
     /// request has not been authenticated.
     fn access_token(&self) -> Option<String>;
+
+    /// Gets the list of scopes authorized by/granted to the user, or None
+    /// if the request has not been authenticated.
+    fn scopes(&self) -> Option<Vec<String>>;
 
     /// Gets the provider-specific user id of the authenticated user, or
     /// None if the request has not been authenticated.
@@ -33,6 +38,13 @@ where
             OpenIdConnectRequestExtData::Authenticated { access_token, .. } => {
                 Some(access_token.clone())
             }
+            _ => None,
+        }
+    }
+
+    fn scopes(&self) -> Option<Vec<String>> {
+        match self.auth_state() {
+            OpenIdConnectRequestExtData::Authenticated { scopes, .. } => Some(scopes.clone()),
             _ => None,
         }
     }

@@ -35,7 +35,7 @@ async fn main() -> tide::Result<()> {
             .recv_json()
             .await?;
 
-        Ok(format!("This authenticated route allows me to access basic information from Microsoft Graph, such as your display name: {}", display_name))
+        Ok(format!("This authenticated route allows me to access basic information from Microsoft Graph, such as your display name: {} (you have scopes {:?})", display_name, req.scopes().unwrap()))
     });
 
     app.listen("127.0.0.1:8000").await?;
