@@ -1,6 +1,28 @@
+//! Demonstrates the usage of `tide-openidconnect` with Azure's Active
+//! Directory identity provider. Additional elements of this example:
+//!
+//! * The "index" route handles both authenticated and unauthenticated
+//!   requests and displays different content based on the authentication
+//!   status of the request. This is contrast to a route that uses
+//!   `OpenIdConnectRequestExt.authenticated()` to only allow the route
+//!   to see authenticated requests (and force authentication if an
+//!   unauthenticated request is presented to that route). See the Auth0
+//!   example for an example of that behavior.
+//! * The access token received from the identity provider is used to call
+//!   back into the Microsoft Graph service in order to retrieve the user's
+//!   display name. This same flow can be used for any identity provider
+//!   that also provides own APIs for use with that identity.
+//! * Logout is supported and logs users out of the local app by clearing
+//!   session state. Note that this does *not* log the user out of the
+//!   identity provider! The user should be able to log back in to the
+//!   app without having to present their credentials again. That behavior
+//!   can be changed by setting the `idp_logout` URL in the configuration,
+//!   which then destroys the identity provider session as well.
+
+use askama::Template;
 use dotenv::dotenv;
 use serde::Deserialize;
-use tide_openidconnect::{self, OpenIdConnectRequestExt, OpenIdConnectRouteExt};
+use tide_openidconnect::{self, OpenIdConnectRequestExt};
 
 #[async_std::main]
 async fn main() -> tide::Result<()> {
@@ -22,24 +44,55 @@ async fn main() -> tide::Result<()> {
 
     app.with(tide_openidconnect::OpenIdConnectMiddleware::new(&cfg.azure).await);
 
-    app.at("/").authenticated().get(|req: tide::Request<()>| async move {
-        // Use the access token to fetch the user's profile from Microsoft
-        // Graph, then return a text response with that information.
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct ProfileResponse {
-            display_name: String,
-        }
-        let ProfileResponse { display_name } = surf::get("https://graph.microsoft.com/v1.0/me")
-            .header("Authorization", format!("Bearer {}", req.access_token().unwrap()))
-            .recv_json()
-            .await?;
-
-        Ok(format!("This authenticated route allows me to access basic information from Microsoft Graph, such as your display name: {} (you have scopes {:?})", display_name, req.scopes().unwrap()))
-    });
+    // Note that this example's single route does *not* require authentication
+    // since we handle both authenticated and unauthenticated requests.
+    app.at("/").get(index);
 
     app.listen("127.0.0.1:8000").await?;
     Ok(())
+}
+
+async fn get_display_name(access_token: &str) -> tide::Result<String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ProfileResponse {
+        display_name: String,
+    }
+    let ProfileResponse { display_name } = surf::get("https://graph.microsoft.com/v1.0/me")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .recv_json()
+        .await?;
+    Ok(display_name)
+}
+
+#[derive(Template)]
+#[template(
+    source = "<p>Hi {{ display_name }}, you are now logged in!</p>
+    
+    <p>Click <a href=\"/logout\">here</a> to logout <i>of this site</i>
+    (you will remained logged into your Microsoft account).</p>",
+    ext = "html"
+)]
+pub struct AuthedIndexTemplate {
+    display_name: String,
+}
+
+#[derive(Template)]
+#[template(
+    source = "<p>You are not logged in.</p>
+    
+    <p>Click <a href=\"/login\">here</a> to login.</p>",
+    ext = "html"
+)]
+pub struct UnauthedIndexTemplate {}
+
+pub async fn index(req: tide::Request<()>) -> tide::Result {
+    if let Some(access_token) = req.access_token() {
+        let display_name = get_display_name(&access_token).await?;
+        Ok(AuthedIndexTemplate { display_name }.into())
+    } else {
+        Ok(UnauthedIndexTemplate {}.into())
+    }
 }
 
 #[derive(Debug, Deserialize)]

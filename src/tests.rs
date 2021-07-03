@@ -478,6 +478,19 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
         )
     );
 
+    // Log the user out of *the application* (they will still be logged
+    // in to the identity provider) by navigating to the (middleware-provided)
+    // logout route.
+    let res = app.get("/logout").await?;
+    assert_eq!(res.status(), StatusCode::Found);
+    assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap().as_str(), "/");
+
+    // Just as in the very beginning, navigating to our normal route should
+    // show that the request (session) is no longer authenticated.
+    let mut res = app.get("/").await?;
+    assert_eq!(res.status(), StatusCode::Ok);
+    assert_eq!(res.body_string().await?, "unauthed");
+
     Ok(())
 }
 

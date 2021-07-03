@@ -105,7 +105,9 @@ pub struct OpenIdConnectMiddleware {
     login_path: String,
     redirect_url: RedirectUrl,
     scopes: Vec<Scope>,
-    landing_path: String,
+    login_landing_path: String,
+    logout_path: String,
+    logout_landing_path: String,
     client: CoreClient,
     redirect_strategy: Arc<dyn RedirectStrategy>,
 }
@@ -116,7 +118,9 @@ impl std::fmt::Debug for OpenIdConnectMiddleware {
             .field("login_path", &self.login_path)
             .field("scopes", &self.scopes)
             .field("redirect_url", &self.redirect_url)
-            .field("landing_path", &self.landing_path)
+            .field("login_landing_path", &self.login_landing_path)
+            .field("logout_path", &self.logout_path)
+            .field("logout_landing_path", &self.logout_landing_path)
             .finish()
     }
 }
@@ -131,7 +135,9 @@ impl OpenIdConnectMiddleware {
     /// - redirect strategy: HttpRedirect
     /// - login path: "/login"
     /// - scopes: ["openid"]
-    /// - landing path: "/"
+    /// - login landing path: "/"
+    /// - logout path: "/logout"
+    /// - logout landing path: "/"
     pub async fn new(config: &Config) -> Self {
         // Get the OpenID Connect provider metadata.
         let provider_metadata =
@@ -155,9 +161,11 @@ impl OpenIdConnectMiddleware {
             login_path: login_path.clone(),
             scopes: vec![],
             redirect_url: config.redirect_url.clone(),
-            landing_path: "/".to_string(),
+            login_landing_path: "/".to_string(),
             client,
             redirect_strategy: Arc::new(HttpRedirect::new(login_path)),
+            logout_path: "/logout".to_string(),
+            logout_landing_path: "/".to_string(),
         }
     }
 
@@ -186,8 +194,8 @@ impl OpenIdConnectMiddleware {
     /// login sequence.
     ///
     /// Defaults to "/".
-    pub fn with_landing_path(mut self, landing_path: &str) -> Self {
-        self.landing_path = landing_path.to_string();
+    pub fn with_login_landing_path(mut self, login_landing_path: &str) -> Self {
+        self.login_landing_path = login_landing_path.to_string();
         self
     }
 
@@ -304,7 +312,7 @@ impl OpenIdConnectMiddleware {
                 .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
 
             // The user has logged in; redirect them to the main site.
-            Ok(Redirect::new(&self.landing_path).into())
+            Ok(Redirect::new(&self.login_landing_path).into())
         } else {
             tide::log::warn!(
                     "Missing OpenID Connect state in session; make sure SessionMiddleware is configured with SameSite::Lax (but do *not* mutate server-side state on GET requests if you make that change!)."
@@ -335,6 +343,17 @@ where
         } else if req.method() == Method::Get && req.url().path() == self.redirect_url.url().path()
         {
             self.handle_callback(req).await
+        } else if req.method() == Method::Get && req.url().path() == self.logout_path {
+            // Clear the user's authentication data from the session,
+            // but leave the rest of the session alone. (the app can clear
+            // out the remainder of the session if that makes sense as
+            // part of a logout).
+            // TODO Should we offer `destroy_session_on_logout` setting? Seems like maybe yes, and it should be the default, since that is safest?
+            req.session_mut().remove(&SESSION_KEY);
+
+            // Redirect the user to the logout landing path now that their
+            // authentication state has been cleared.
+            Ok(Redirect::new(&self.logout_landing_path).into())
         } else {
             // Get the middleware's session state (which will *not* be
             // present if the browser has not yet gone through the auth
