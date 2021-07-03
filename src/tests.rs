@@ -404,14 +404,15 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     // across requests without even paying attention to the SameSite attribute
     // in the response.
     app.at("/").get(|req: Request<()>| async move {
-        Ok(match req.user_id() {
-            Some(user_id) => format!(
+        Ok(if req.is_authenticated() {
+            format!(
                 "authed access_token={} scopes={:?} userid={}",
                 req.access_token().unwrap(),
                 req.scopes().unwrap(),
-                user_id
-            ),
-            None => "unauthed".to_string(),
+                req.user_id().unwrap(),
+            )
+        } else {
+            "unauthed".to_string()
         })
     });
 

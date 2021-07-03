@@ -16,6 +16,9 @@ pub(crate) enum OpenIdConnectRequestExtData {
 
 /// Provides access to request-level OpenID Connect authorization data.
 pub trait OpenIdConnectRequestExt {
+    /// Returns `true` if the request is authenticated, `false` otherwise.
+    fn is_authenticated(&self) -> bool;
+
     /// Gets the access token for the authenticated user, or None if the
     /// request has not been authenticated.
     fn access_token(&self) -> Option<String>;
@@ -33,6 +36,13 @@ impl<State> OpenIdConnectRequestExt for Request<State>
 where
     State: Send + Sync + 'static,
 {
+    fn is_authenticated(&self) -> bool {
+        matches!(
+            self.auth_state(),
+            OpenIdConnectRequestExtData::Authenticated { .. }
+        )
+    }
+
     fn access_token(&self) -> Option<String> {
         match self.auth_state() {
             OpenIdConnectRequestExtData::Authenticated { access_token, .. } => {

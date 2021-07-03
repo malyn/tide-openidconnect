@@ -87,8 +87,8 @@ pub struct AuthedIndexTemplate {
 pub struct UnauthedIndexTemplate {}
 
 pub async fn index(req: tide::Request<()>) -> tide::Result {
-    if let Some(access_token) = req.access_token() {
-        let display_name = get_display_name(&access_token).await?;
+    if req.is_authenticated() {
+        let display_name = get_display_name(&req.access_token().unwrap()).await?;
         Ok(AuthedIndexTemplate { display_name }.into())
     } else {
         Ok(UnauthedIndexTemplate {}.into())
