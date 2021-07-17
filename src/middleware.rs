@@ -107,6 +107,7 @@ pub struct OpenIdConnectMiddleware {
     scopes: Vec<Scope>,
     login_landing_path: String,
     logout_path: String,
+    logout_destroys_session: bool,
     logout_landing_path: String,
     client: CoreClient,
     redirect_strategy: Arc<dyn RedirectStrategy>,
@@ -120,6 +121,7 @@ impl std::fmt::Debug for OpenIdConnectMiddleware {
             .field("redirect_url", &self.redirect_url)
             .field("login_landing_path", &self.login_landing_path)
             .field("logout_path", &self.logout_path)
+            .field("logout_destroys_session", &self.logout_destroys_session)
             .field("logout_landing_path", &self.logout_landing_path)
             .finish()
     }
@@ -137,6 +139,7 @@ impl OpenIdConnectMiddleware {
     /// - scopes: ["openid"]
     /// - login landing path: "/"
     /// - logout path: "/logout"
+    /// - logout destroys session: true
     /// - logout landing path: "/"
     pub async fn new(config: &Config) -> Self {
         // Get the OpenID Connect provider metadata.
@@ -165,6 +168,7 @@ impl OpenIdConnectMiddleware {
             client,
             redirect_strategy: Arc::new(HttpRedirect::new(login_path)),
             logout_path: "/logout".to_string(),
+            logout_destroys_session: true,
             logout_landing_path: "/".to_string(),
         }
     }
@@ -196,6 +200,35 @@ impl OpenIdConnectMiddleware {
     /// Defaults to "/".
     pub fn with_login_landing_path(mut self, login_landing_path: &str) -> Self {
         self.login_landing_path = login_landing_path.to_string();
+        self
+    }
+
+    /// Sets a flag indicating if the logout URL should destroy *all*
+    /// session state -- both the auth state *and* any app-level state --
+    /// or if logout should clear only the auth state and leave the remainder
+    /// of the state intact.
+    ///
+    /// Applications should only retain session state after a logout if
+    /// doing so will *not* leave any (private) artifacts of the user's
+    /// data in the session after the logout process. The current page,
+    /// status of collapsed UI elements, etc. would be safe to retain,
+    /// whereas the user name, form content, etc. needs to be cleared
+    /// after the logout process (which can be done by, for example,
+    /// configuring the `logout_landing_path` to go to a route that cleans
+    /// up personally-identifying information after the logout completes).
+    ///
+    /// Defaults to true.
+    pub fn with_logout_destroys_session(mut self, logout_destroys_session: bool) -> Self {
+        self.logout_destroys_session = logout_destroys_session;
+        self
+    }
+
+    /// Sets the path where the browser will be sent after the logout
+    /// sequence.
+    ///
+    /// Defaults to "/".
+    pub fn with_logout_landing_path(mut self, logout_landing_path: &str) -> Self {
+        self.logout_landing_path = logout_landing_path.to_string();
         self
     }
 
@@ -344,12 +377,14 @@ where
         {
             self.handle_callback(req).await
         } else if req.method() == Method::Get && req.url().path() == self.logout_path {
-            // Clear the user's authentication data from the session,
-            // but leave the rest of the session alone. (the app can clear
-            // out the remainder of the session if that makes sense as
-            // part of a logout).
-            // TODO Should we offer `destroy_session_on_logout` setting? Seems like maybe yes, and it should be the default, since that is safest?
-            req.session_mut().remove(&SESSION_KEY);
+            // Destroy the session as part of the logout, or clear only
+            // the app state, depending on how the middleware has been
+            // configured.
+            if self.logout_destroys_session {
+                req.session_mut().destroy();
+            } else {
+                req.session_mut().remove(&SESSION_KEY);
+            }
 
             // Redirect the user to the logout landing path now that their
             // authentication state has been cleared.
