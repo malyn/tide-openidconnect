@@ -34,6 +34,7 @@ static DEFAULT_CONFIG: Lazy<Config> = Lazy::new(|| Config {
     client_id: CLIENT_ID.clone(),
     client_secret: CLIENT_SECRET.clone(),
     redirect_url: REDIRECT_URL.clone(),
+    idp_logout_url: None,
 });
 
 fn get_tidesid_cookie(response: &tide_testing::surf::Response) -> tide::http::Cookie {

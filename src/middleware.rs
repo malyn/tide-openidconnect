@@ -50,6 +50,26 @@ pub struct Config {
     /// URL to which the OpenID Connect provider will redirect authenticated
     /// requests; must be a URL registered with the provider.
     pub redirect_url: RedirectUrl,
+
+    /// Optional URL used to log the user out of the identity provider
+    /// as part of the application logout process. If provided, the browser
+    /// will be redirected to this URL *after* clearing the auth info from
+    /// the Tide session.
+    ///
+    /// Note that most (all?) identity providers allow you to include a
+    /// query parameter that will cause the browser to redirect to a
+    /// post-logout page in the application after the identity provider
+    /// credentials have been cleared from the browser; you should almost
+    /// certainly populate that query parameter to ensure that the user
+    /// ends back up at your site after the logout. In most cases this
+    /// will be the same as the `logout_landing_path`, but unfortunately
+    /// the middleware cannot autopopulate the query parameter with that
+    /// value because it varies from provider to provider.
+    ///
+    /// Finally, identity providers often require you to register the
+    /// logout URL in their configuration (in the same way that you need
+    /// to register your callback URL with them).
+    pub idp_logout_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -86,6 +106,7 @@ enum MiddlewareSessionState {
 ///             client_id: tide_openidconnect::ClientId::new("app-id-goes-here".to_string()),
 ///             client_secret: tide_openidconnect::ClientSecret::new("app-secret-goes-here".to_string()),
 ///             redirect_url: tide_openidconnect::RedirectUrl::new("http://your.cool.site/callback".to_string()).unwrap(),
+///             idp_logout_url: None,
 ///         }
 ///     )
 ///     .await,
@@ -108,6 +129,7 @@ pub struct OpenIdConnectMiddleware {
     login_landing_path: String,
     logout_path: String,
     logout_destroys_session: bool,
+    idp_logout_url: Option<String>,
     logout_landing_path: String,
     client: CoreClient,
     redirect_strategy: Arc<dyn RedirectStrategy>,
@@ -120,6 +142,7 @@ impl std::fmt::Debug for OpenIdConnectMiddleware {
             .field("scopes", &self.scopes)
             .field("redirect_url", &self.redirect_url)
             .field("login_landing_path", &self.login_landing_path)
+            .field("idp_logout_url", &self.idp_logout_url)
             .field("logout_path", &self.logout_path)
             .field("logout_destroys_session", &self.logout_destroys_session)
             .field("logout_landing_path", &self.logout_landing_path)
@@ -169,6 +192,7 @@ impl OpenIdConnectMiddleware {
             redirect_strategy: Arc::new(HttpRedirect::new(login_path)),
             logout_path: "/logout".to_string(),
             logout_destroys_session: true,
+            idp_logout_url: config.idp_logout_url.clone(),
             logout_landing_path: "/".to_string(),
         }
     }
@@ -386,9 +410,16 @@ where
                 req.session_mut().remove(&SESSION_KEY);
             }
 
-            // Redirect the user to the logout landing path now that their
-            // authentication state has been cleared.
-            Ok(Redirect::new(&self.logout_landing_path).into())
+            // Redirect the user now that their authentication state has
+            // been cleared; we send them either to the identity provider's
+            // logout URL (if provided), or to the app's logout landing
+            // path if the app is not configured to log the user out of
+            // the identity provider.
+            if let Some(idp_logout_url) = &self.idp_logout_url {
+                Ok(Redirect::new(idp_logout_url).into())
+            } else {
+                Ok(Redirect::new(&self.logout_landing_path).into())
+            }
         } else {
             // Get the middleware's session state (which will *not* be
             // present if the browser has not yet gone through the auth
