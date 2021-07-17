@@ -16,10 +16,9 @@
 //!   session state. Note that this does *not* log the user out of the
 //!   identity provider! The user should be able to log back in to the
 //!   app without having to present their credentials again. That behavior
-//!   can be changed by setting the `idp_logout` URL in the configuration,
+//!   can be changed by setting the `idp_logout_url` URL in the configuration,
 //!   which then destroys the identity provider session as well.
 
-use askama::Template;
 use dotenv::dotenv;
 use serde::Deserialize;
 use tide_openidconnect::{self, OpenIdConnectRequestExt};
@@ -65,33 +64,28 @@ async fn get_display_name(access_token: &str) -> tide::Result<String> {
     Ok(display_name)
 }
 
-#[derive(Template)]
-#[template(
-    source = "<p>Hi {{ display_name }}, you are now logged in!</p>
-    
-    <p>Click <a href=\"/logout\">here</a> to logout <i>of this site</i>
-    (you will remained logged into your Microsoft account).</p>",
-    ext = "html"
-)]
-pub struct AuthedIndexTemplate {
-    display_name: String,
-}
-
-#[derive(Template)]
-#[template(
-    source = "<p>You are not logged in.</p>
-    
-    <p>Click <a href=\"/login\">here</a> to login.</p>",
-    ext = "html"
-)]
-pub struct UnauthedIndexTemplate {}
-
 pub async fn index(req: tide::Request<()>) -> tide::Result {
     if req.is_authenticated() {
         let display_name = get_display_name(&req.access_token().unwrap()).await?;
-        Ok(AuthedIndexTemplate { display_name }.into())
+        Ok(tide::Response::builder(200)
+            .content_type(tide::http::mime::HTML)
+            .body(format!(
+                "<p>Hi {}, you are now logged in!</p>
+    
+                <p>Click <a href=\"/logout\">here</a> to logout <i>of this site</i>
+                (you will remained logged into your Microsoft account).</p>",
+                display_name
+            ))
+            .build())
     } else {
-        Ok(UnauthedIndexTemplate {}.into())
+        Ok(tide::Response::builder(200)
+            .content_type(tide::http::mime::HTML)
+            .body(
+                "<p>You are not logged in.</p>
+        
+                <p>Click <a href=\"/login\">here</a> to login.</p>",
+            )
+            .build())
     }
 }
 
