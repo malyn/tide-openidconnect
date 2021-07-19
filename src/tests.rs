@@ -37,16 +37,61 @@ static DEFAULT_CONFIG: Lazy<Config> = Lazy::new(|| Config {
     idp_logout_url: None,
 });
 
-fn get_tidesid_cookie(response: &tide_testing::surf::Response) -> tide::http::Cookie {
-    tide::http::Cookie::parse(
-        response
-            .header(SET_COOKIE)
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .to_string(),
-    )
-    .unwrap()
+struct SessionCookieJarMiddleware {
+    session_cookie: Arc<Mutex<Option<tide::http::Cookie<'static>>>>,
+}
+
+impl Default for SessionCookieJarMiddleware {
+    fn default() -> Self {
+        Self {
+            session_cookie: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+#[surf::utils::async_trait]
+impl surf::middleware::Middleware for SessionCookieJarMiddleware {
+    async fn handle(
+        &self,
+        mut req: surf::Request,
+        client: surf::Client,
+        next: surf::middleware::Next<'_>,
+    ) -> surf::Result<surf::Response> {
+        // Add the session cookie, if we have one, to the request.
+        if let Some(cookie) = &*self.session_cookie.lock().await {
+            tide::log::trace!("Adding session cookie to request.");
+            req.set_header(COOKIE, cookie.to_string());
+        }
+
+        // Continue the request and collect the response.
+        let res = next.run(req, client).await?;
+
+        // Did we get a session cookie back? If so, either replace our
+        // current session cookie, or clear the existing session cookie
+        // if the new one has already expired (which is how servers
+        // ask the browser to delete a cookie).
+        if let Some(values) = res.header(SET_COOKIE) {
+            if let Some(value) = values.get(0) {
+                let mut session_cookie_guard = self.session_cookie.lock().await;
+
+                let cookie = tide::http::Cookie::parse(value.to_string()).unwrap();
+                if cookie
+                    .expires()
+                    .unwrap()
+                    .ge(&time::OffsetDateTime::now_utc())
+                {
+                    tide::log::trace!("Received new/updated session cookie from server.");
+                    *session_cookie_guard = Some(cookie);
+                } else {
+                    tide::log::trace!("Server removed session cookie.");
+                    *session_cookie_guard = None;
+                }
+            }
+        }
+
+        // Pass the response back up the middleware chain.
+        Ok(res)
+    }
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -432,30 +477,20 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
         })
     });
 
+    // Create our test client (and its session cookie jar).
+    let client = app.client().with(SessionCookieJarMiddleware::default());
+
     // An initial check of our normal route should show that the request
     // (session, really) is not yet authenticated.
-    let mut res = app.get("/").await?;
+    let mut res = client.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(res.body_string().await?, "unauthed visits=1");
-    // TODO Can we automate this somehow? Create some helper that auto-flows
-    // the tide.sid cookie across requests? Maybe we just manually reimplement
-    // tide-testing here, but have it auto-flow cookies if you provide the
-    // previous/initial response... Maybe we do this using middleware, per
-    // [this issue](https://github.com/http-rs/surf/issues/19)? In our case,
-    // we replace tide-testing with our own custom thing, that uses middleware
-    // for the cookie jar. Basically you: create the client (attached to a
-    // server), add the cookie jar middleware, then send requests with that
-    // client, which accumulate and send cookies with each request.
-    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
 
     // Navigate to the login path, which should generate a redirect to the
     // authentication provider. We extract the state and nonce from this
     // redirect so that the test can generate the proper auth provider
     // response during the token exchange request.
-    let res = app
-        .get("/login")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let res = client.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
     let authorize_url =
         ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str());
@@ -476,19 +511,15 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
     )])
     .await;
 
-    let res = app
+    let res = client
         .get(format!("/callback?code=12345&state={}", state))
-        .header(COOKIE, session_cookie.to_string())
         .await?;
     assert_eq!(res.status(), StatusCode::Found);
     assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap(), "/");
 
     // A final check of our normal route should show that the request
     // (session, really) is authenticated, and contains the user id.
-    let mut res = app
-        .get("/")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let mut res = client.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(
         res.body_string().await?,
@@ -500,30 +531,17 @@ async fn middleware_provides_redirect_route() -> tide::Result<()> {
 
     // Log the user out of *the application* (they will still be logged
     // in to the identity provider) by navigating to the (middleware-provided)
-    // logout route. Note that this should also clear the session cookie,
-    // *however* we will ignore that and try to send the cookie to the next
-    // request, just to confirm that the backend session has in fact been
-    // destroyed.
-    let res = app
-        .get("/logout")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    // logout route.
+    let res = client.get("/logout").await?;
     assert_eq!(res.status(), StatusCode::Found);
     assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap().as_str(), "/");
-    assert!(get_tidesid_cookie(&res)
-        .expires()
-        .unwrap()
-        .le(&time::OffsetDateTime::now_utc()));
 
     // Just as in the very beginning, navigating to our normal route should
     // show that the request (session) is no longer authenticated. Furthermore,
     // because we destroy the session in this test (which is also the default),
     // the "visits" counter has been reset, indicating that the entire session
     // has been destroyed.
-    let mut res = app
-        .get("/")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let mut res = client.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(res.body_string().await?, "unauthed visits=1");
 
@@ -587,30 +605,20 @@ async fn app_session_data_can_be_retained_after_logout() -> tide::Result<()> {
         })
     });
 
+    // Create our test client (and its session cookie jar).
+    let client = app.client().with(SessionCookieJarMiddleware::default());
+
     // An initial check of our normal route should show that the request
     // (session, really) is not yet authenticated.
-    let mut res = app.get("/").await?;
+    let mut res = client.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(res.body_string().await?, "unauthed visits=1");
-    // TODO Can we automate this somehow? Create some helper that auto-flows
-    // the tide.sid cookie across requests? Maybe we just manually reimplement
-    // tide-testing here, but have it auto-flow cookies if you provide the
-    // previous/initial response... Maybe we do this using middleware, per
-    // [this issue](https://github.com/http-rs/surf/issues/19)? In our case,
-    // we replace tide-testing with our own custom thing, that uses middleware
-    // for the cookie jar. Basically you: create the client (attached to a
-    // server), add the cookie jar middleware, then send requests with that
-    // client, which accumulate and send cookies with each request.
-    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
 
     // Navigate to the login path, which should generate a redirect to the
     // authentication provider. We extract the state and nonce from this
     // redirect so that the test can generate the proper auth provider
     // response during the token exchange request.
-    let res = app
-        .get("/login")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let res = client.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
     let authorize_url =
         ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str());
@@ -631,19 +639,15 @@ async fn app_session_data_can_be_retained_after_logout() -> tide::Result<()> {
     )])
     .await;
 
-    let res = app
+    let res = client
         .get(format!("/callback?code=12345&state={}", state))
-        .header(COOKIE, session_cookie.to_string())
         .await?;
     assert_eq!(res.status(), StatusCode::Found);
     assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap(), "/");
 
     // A final check of our normal route should show that the request
     // (session, really) is authenticated, and contains the user id.
-    let mut res = app
-        .get("/")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let mut res = client.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(
         res.body_string().await?,
@@ -658,23 +662,15 @@ async fn app_session_data_can_be_retained_after_logout() -> tide::Result<()> {
     // logout route. Note that this test does *not* destroy the entire
     // session after a logout, but instead configures the middleware to
     // retain the app data, clearing only the auth data, after a logout.
-    // The session cookie should also not have been cleared.
-    let res = app
-        .get("/logout")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let res = client.get("/logout").await?;
     assert_eq!(res.status(), StatusCode::Found);
     assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap().as_str(), "/");
-    assert!(res.header(SET_COOKIE).is_none());
 
     // Just as in the very beginning, navigating to our normal route should
     // show that the request (session) is no longer authenticated. While the
     // request should no longer be authenticated, we should have the correct
     // value of our "visits" counter.
-    let mut res = app
-        .get("/")
-        .header(COOKIE, session_cookie.to_string())
-        .await?;
+    let mut res = client.get("/").await?;
     assert_eq!(res.status(), StatusCode::Ok);
     assert_eq!(res.body_string().await?, "unauthed visits=3");
 
@@ -693,23 +689,24 @@ async fn redirect_route_rejects_invalid_csrf() -> tide::Result<()> {
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
+    // Create our test client (and its session cookie jar).
+    let client = app.client().with(SessionCookieJarMiddleware::default());
+
     // Navigate to the login path, which generates a redirect to the
     // authentication provider. Note that we do not need to confirm the
     // shape of the redirect URL (that happens in other tests), but we
     // do need to make this call in order to properly set up the session
     // state (which contains the CSRF state against which we will verify
     // the state in the callback).
-    let res = app.get("/login").await?;
+    let res = client.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
-    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
 
     // Issue the callback to our middleware, *but with a mismatched CSRF
     // state.* The request will be rejected before we even make the call
     // to the auth provider (hence no need to set up an auth provider
     // response).
-    let res = app
+    let res = client
         .get("/callback?code=12345&state=BADCSRFSTATE")
-        .header(COOKIE, session_cookie.to_string())
         .await?;
     assert_eq!(res.status(), StatusCode::Unauthorized);
 
@@ -728,26 +725,30 @@ async fn redirect_route_rejects_invalid_nonce() -> tide::Result<()> {
     set_pending_response(vec![create_discovery_response(), create_jwks_response()]).await;
     app.with(OpenIdConnectMiddleware::new(&DEFAULT_CONFIG).await);
 
+    // Create our test client (and its session cookie jar).
+    let client = app.client().with(SessionCookieJarMiddleware::default());
+
     // Navigate to the login path, which should generate a redirect to the
     // authentication provider. We extract the state from this redirect
     // so that the test can pass that to the callback URI.
-    let res = app.get("/login").await?;
+    let res = client.get("/login").await?;
     assert_eq!(res.status(), StatusCode::Found);
     let authorize_url =
         ParsedAuthorizeUrl::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str());
     let state = authorize_url.state.clone().unwrap().to_string();
-    let session_cookie: tide::http::Cookie = get_tidesid_cookie(&res);
 
     // Prepare the auth provider's token response, *but with a different
-    // nonce,* then issue the callback to our middleware. That request
+    // nonce,* then issue the callback to our middleware. The callback
+    // handler will call the identity provider to retrieve the token,
+    // and then reject that request due to the mismatched (token-level)
+    // nonce.
     set_pending_response(vec![create_id_token_response(
         "atoken", "openid", "userid", "BADNONCE",
     )])
     .await;
 
-    let res = app
+    let res = client
         .get(format!("/callback?code=12345&state={}", state))
-        .header(COOKIE, session_cookie.to_string())
         .await?;
     assert_eq!(res.status(), StatusCode::Unauthorized);
 
