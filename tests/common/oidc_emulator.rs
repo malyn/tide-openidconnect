@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use async_lock::Mutex;
-// use async_std::io;
 use async_std::prelude::*;
 use async_std::sync::Arc;
 use chrono::{Duration, Utc};
@@ -134,19 +133,14 @@ impl OpenIdConnectEmulator {
     pub async fn run_with_emulator<'a, Fut>(
         &'a self,
         f: impl FnOnce(&'a Self) -> Fut,
-    ) -> tide::Result<()>
+    ) -> http_types::Result<()>
     where
-        Fut: Future<Output = tide::Result<()>>,
+        Fut: Future<Output = http_types::Result<()>>,
     {
         self.run().race(f(self)).await
     }
 
-    // TODO Can we switch this to io::Result so that we are not binding to
-    // Tide in what should be a generic emulator? The problem is that the
-    // `.race()` method needs the same return types, and it seems like the
-    // tide testing helper thing always returns surf::Result, which doesn't
-    // have an "into" implementation to io::Result...
-    pub async fn run(&self) -> tide::Result<()> {
+    pub async fn run(&self) -> http_types::Result<()> {
         let state = State {
             issuer_url: self.issuer_url(),
             tokens: Arc::clone(&self.tokens),

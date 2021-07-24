@@ -1936,6 +1936,7 @@ dependencies = [
  "dotenv",
  "futures-lite",
  "http",
+ "http-types",
  "isahc 1.4.0",
  "once_cell",
  "openidconnect",

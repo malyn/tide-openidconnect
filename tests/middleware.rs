@@ -22,7 +22,7 @@ use crate::common::{
 };
 
 #[async_std::test]
-async fn login_logout() -> tide::Result<()> {
+async fn login_logout() -> http_types::Result<()> {
     // tide::log::with_level(tide::log::LevelFilter::Warn);
     OpenIdConnectEmulator::new(RedirectUrl::new("http://localhost/callback".to_string()).unwrap())
         .run_with_emulator(|emu| async move {
