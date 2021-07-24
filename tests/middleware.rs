@@ -15,24 +15,14 @@ use tide_openidconnect::{
 };
 
 mod common;
-use common::authorizeurl::ParsedAuthorizeUrl;
-use common::cookiejar::SessionCookieJarMiddleware;
-use common::oidc_emulator::OpenIdConnectEmulator;
-
-const SECRET: [u8; 32] = *b"secrets must be >= 32 bytes long";
-
-fn get_config(issuer_url: IssuerUrl) -> tide_openidconnect::Config {
-    Config {
-        issuer_url,
-        client_id: ClientId::new("CLIENT-ID".to_string()),
-        client_secret: ClientSecret::new("CLIENT-SECRET".to_string()),
-        redirect_url: RedirectUrl::new("http://localhost/callback".to_string()).unwrap(),
-        idp_logout_url: None,
-    }
-}
+use crate::common::{
+    assert_redirect, assert_response, authorizeurl::ParsedAuthorizeUrl,
+    cookiejar::SessionCookieJarMiddleware, create_test_server_and_client,
+    oidc_emulator::OpenIdConnectEmulator,
+};
 
 #[test]
-fn middleware_provides_redirect_route() -> tide::Result<()> {
+fn login_logout() -> tide::Result<()> {
     // tide::log::with_level(tide::log::LevelFilter::Warn);
     task::block_on(async {
         let oidc_emulator = Arc::new(OpenIdConnectEmulator::new(
@@ -46,63 +36,13 @@ fn middleware_provides_redirect_route() -> tide::Result<()> {
         // etc.
         let test_emulator = Arc::clone(&oidc_emulator);
         let test = task::spawn(async move {
-            let mut app = tide::new();
-            app.with(
-                SessionMiddleware::new(MemoryStore::new(), &SECRET)
-                    .with_same_site_policy(tide::http::cookies::SameSite::Lax),
-            );
-
-            app.with(OpenIdConnectMiddleware::new(&get_config(test_emulator.issuer_url())).await);
-
-            // Add the `/` route, which we use to check the authed/unauthed
-            // status status of the request. Note that we would also like
-            // to use this handler to confirm that session state is preserved
-            // across the auth procedure (which it is), but that behavior
-            // is mostly a side-effect of the SessionMiddleware's cookie
-            // setting (which *this* middleware requires be set to Lax).
-            // So we could test that, but A) we would only be testing that
-            // we set that to Lax earlier in this test function, and more
-            // importantly B) wouldn't actually be testing the SameSite
-            // setting anyway, since we are manually flowing the session
-            // cookie across requests without even paying attention to the
-            // SameSite attribute in the response. However, even with all
-            // of that said, we still want to store (and later, check)
-            // app-level session state, since we want to confirm that our
-            // logout setting -- clear auth data vs. destroy session --
-            // preserves/does not preserve that app state. Note that if
-            // we destroy the session then the session id (and thus, cookie)
-            // is no longer valid, whereas if we just clear the auth state
-            // then the id is still valid and it is only the auth state
-            // inside that session that is removed.
-            app.at("/").get(|mut req: Request<()>| async move {
-                // Get/Update the request counter (used to verify session state
-                // across login/logout operations).
-                let session = req.session_mut();
-                let visits: usize = session.get::<usize>("visits").unwrap_or_default() + 1;
-                session.insert("visits", visits).unwrap();
-
-                // Return the string that we use to validate the request state.
-                Ok(if req.is_authenticated() {
-                    format!(
-                        "authed visits={} access_token={} scopes={:?} userid={}",
-                        visits,
-                        req.access_token().unwrap(),
-                        req.scopes().unwrap(),
-                        req.user_id().unwrap(),
-                    )
-                } else {
-                    format!("unauthed visits={}", visits)
-                })
-            });
-
-            // Create our test client (and its session cookie jar).
-            let client = app.client().with(SessionCookieJarMiddleware::default());
+            let (mut _app, client) =
+                create_test_server_and_client(&test_emulator.issuer_url()).await;
 
             // An initial check of our normal route should show that the request
             // (session, really) is not yet authenticated.
             let mut res = client.get("/").await?;
-            assert_eq!(res.status(), StatusCode::Ok);
-            assert_eq!(res.body_string().await?, "unauthed visits=1");
+            assert_response(&mut res, "unauthed visits=1").await;
 
             // Navigate to the login path, which should generate a redirect to the
             // authentication provider. We extract the state and nonce from this
@@ -121,39 +61,26 @@ fn middleware_provides_redirect_route() -> tide::Result<()> {
             // the token by the emulator). This completes the authentication
             // process (by exchanging the code for a token) and redirects
             // the client to the landing path.
-            let userid = "1234567890";
-            let authorization_code = test_emulator
-                .add_token("atoken", "openid", userid, &authorize_url.nonce.unwrap())
+            let callback_url = test_emulator
+                .add_token("atoken", "openid", "id", &authorize_url)
                 .await;
-
-            let res = client
-                .get(format!(
-                    "/callback?code={}&state={}",
-                    authorization_code,
-                    authorize_url.state.unwrap(),
-                ))
-                .await?;
-            assert_eq!(res.status(), StatusCode::Found);
-            assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap(), "/");
+            let res = client.get(callback_url).await?;
+            assert_redirect(&res, "/");
 
             // A final check of our normal route should show that the request
             // (session, really) is authenticated, and contains the user id.
             let mut res = client.get("/").await?;
-            assert_eq!(res.status(), StatusCode::Ok);
-            assert_eq!(
-                res.body_string().await?,
-                format!(
-                    "authed visits=2 access_token=atoken scopes=[\"openid\"] userid={}",
-                    userid
-                )
-            );
+            assert_response(
+                &mut res,
+                "authed visits=2 access_token=atoken scopes=[\"openid\"] userid=id",
+            )
+            .await;
 
             // Log the user out of *the application* (they will still be logged
             // in to the identity provider) by navigating to the (middleware-provided)
             // logout route.
             let res = client.get("/logout").await?;
-            assert_eq!(res.status(), StatusCode::Found);
-            assert_eq!(res.header(LOCATION).unwrap().get(0).unwrap().as_str(), "/");
+            assert_redirect(&res, "/");
 
             // Just as in the very beginning, navigating to our normal route should
             // show that the request (session) is no longer authenticated. Furthermore,
@@ -161,8 +88,7 @@ fn middleware_provides_redirect_route() -> tide::Result<()> {
             // the "visits" counter has been reset, indicating that the entire session
             // has been destroyed.
             let mut res = client.get("/").await?;
-            assert_eq!(res.status(), StatusCode::Ok);
-            assert_eq!(res.body_string().await?, "unauthed visits=1");
+            assert_response(&mut res, "unauthed visits=1").await;
 
             Ok(())
         });

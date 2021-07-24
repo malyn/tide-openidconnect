@@ -9,6 +9,8 @@ use portpicker::pick_unused_port;
 use tide::prelude::*;
 use tide::Request;
 
+use crate::common::authorizeurl::ParsedAuthorizeUrl;
+
 // From here: <https://github.com/ramosbugs/openidconnect-rs/blob/cfa5af581ee100791f68bf099dd15fa3eb492c8b/src/jwt.rs#L489>
 const TEST_RSA_PUB_KEY: &str = "{
             \"kty\": \"RSA\",
@@ -201,11 +203,20 @@ impl OpenIdConnectEmulator {
         Ok(())
     }
 
-    pub async fn add_token<S>(&self, access_token: S, scopes: S, userid: S, nonce: S) -> String
+    pub async fn add_token<S>(
+        &self,
+        access_token: S,
+        scopes: S,
+        userid: S,
+        authorize_url: &ParsedAuthorizeUrl,
+    ) -> String
     where
         S: AsRef<str>,
     {
+        // TODO Generate a random (GUID?) authorization_code.
         let authorization_code = "12345";
+
+        // Create the token and add it to the emulator.
         let mut tokens = self.tokens.lock().await;
         tokens.insert(
             authorization_code.to_string(),
@@ -213,9 +224,18 @@ impl OpenIdConnectEmulator {
                 access_token: access_token.as_ref().to_string(),
                 scopes: scopes.as_ref().to_string(),
                 userid: userid.as_ref().to_string(),
-                nonce: nonce.as_ref().to_string(),
+                nonce: authorize_url.nonce.as_ref().unwrap().to_string(),
             },
         );
-        authorization_code.to_string()
+
+        // Return the callback URL (back to the application-under-test)
+        // which will complete the auth request by exchanging the code for
+        // the token.
+        format!(
+            "{}?code={}&state={}",
+            self.redirect_url.url().path(),
+            authorization_code,
+            authorize_url.state.as_ref().unwrap(),
+        )
     }
 }
