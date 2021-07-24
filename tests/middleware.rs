@@ -27,7 +27,6 @@ async fn login_logout() -> tide::Result<()> {
     let oidc_emulator = Arc::new(OpenIdConnectEmulator::new(
         RedirectUrl::new("http://localhost/callback".to_string()).unwrap(),
     ));
-    let oidc_server = oidc_emulator.run();
 
     // TODO What if we made this an oidc_emulator.run() fn? The idea is
     // that *the emulator* calls the function and then returns when that
@@ -93,5 +92,5 @@ async fn login_logout() -> tide::Result<()> {
 
     // Wait for the test to complete (or the OpenID Connect emulator
     // server to exit, although that would be unexpected).
-    oidc_server.race(test).await
+    oidc_emulator.run().race(test).await
 }
