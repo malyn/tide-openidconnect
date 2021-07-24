@@ -1,12 +1,7 @@
-use self::cookiejar::SessionCookieJarMiddleware;
 use surf::{http::headers::LOCATION, StatusCode};
 use tide::sessions::{MemoryStore, SessionMiddleware};
-use tide_testing::TideTestingExt;
 
-use tide_openidconnect::{
-    ClientId, ClientSecret, IssuerUrl, OpenIdConnectMiddleware, OpenIdConnectRequestExt,
-    RedirectUrl,
-};
+use tide_openidconnect::{ClientId, ClientSecret, IssuerUrl, OpenIdConnectRequestExt, RedirectUrl};
 
 pub mod authorizeurl;
 pub mod cookiejar;
@@ -14,9 +9,9 @@ pub mod oidc_emulator;
 
 const SECRET: [u8; 32] = *b"secrets must be >= 32 bytes long";
 
-pub fn get_config(issuer_url: IssuerUrl) -> tide_openidconnect::Config {
+pub fn get_config(issuer_url: &IssuerUrl) -> tide_openidconnect::Config {
     tide_openidconnect::Config {
-        issuer_url,
+        issuer_url: issuer_url.clone(),
         client_id: ClientId::new("CLIENT-ID".to_string()),
         client_secret: ClientSecret::new("CLIENT-SECRET".to_string()),
         redirect_url: RedirectUrl::new("http://localhost/callback".to_string()).unwrap(),
@@ -24,17 +19,17 @@ pub fn get_config(issuer_url: IssuerUrl) -> tide_openidconnect::Config {
     }
 }
 
-pub async fn create_test_server_and_client(
-    issuer_url: &IssuerUrl,
-) -> (tide::Server<()>, surf::Client) {
+pub fn create_test_server() -> tide::Server<()> {
+    // Create the Tide server and our (required-by-OpenIdConnectMiddleware)
+    // session middleware. We do *not* add the OpenIdConnectMiddleware
+    // in this function; we let the caller do that so that it can configure
+    // the middleware according to the requirements of the test.
     let mut app = tide::new();
 
     app.with(
         SessionMiddleware::new(MemoryStore::new(), &SECRET)
             .with_same_site_policy(tide::http::cookies::SameSite::Lax),
     );
-
-    app.with(OpenIdConnectMiddleware::new(&get_config(issuer_url.clone())).await);
 
     // Add the `/` route, which we use to check the authed/unauthed
     // status status of the request. Note that we would also like
@@ -77,11 +72,8 @@ pub async fn create_test_server_and_client(
         })
     });
 
-    // Create our test client (and its session cookie jar).
-    let client = app.client().with(SessionCookieJarMiddleware::default());
-
-    // Return the server and client.
-    (app, client)
+    // Return the server.
+    app
 }
 
 pub async fn assert_response(res: &mut surf::Response, expected_body: impl AsRef<str>) {

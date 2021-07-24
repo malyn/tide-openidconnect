@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::isahc::http_client;
 use crate::redirect_strategy::{HttpRedirect, RedirectStrategy};
 use crate::request_ext::OpenIdConnectRequestExtData;
 use openidconnect::{
@@ -9,27 +10,6 @@ use openidconnect::{
 };
 use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
-
-// Why are we using cfg(not(test)) / cfg(test) to select the http_client
-// implementation? Because oauth2-rs, the crate that powers openidconnect-rs,
-// expects the http_client function to be an asynchronous function instead
-// of a(n asynchronous) trait. I can't find a way to expose a `with_http_client`
-// function in the middleware trait and so my only option is to hardcode
-// the http_client when we call openidconnect-rs. But that prevents us from
-// writing unit tests without also implementing (an HTTPS!) OpenID Connect
-// *server* in the tests. The simplest solution is to use conditional
-// compilation to select the mock client when running tests, although all
-// things considered I feel like the best solution would be for oauth2-rs
-// to accept an async trait for the http_client instead of an async function.
-// Note that this issue doesn't affect the openidconnect-rs/oauth2-rs tests
-// (in those crates) themselves, because they are written at a level where
-// they can trivially pass in a mock async function; it is only the users
-// of those crates that run into this mocking issue.
-#[cfg(not(test))]
-use crate::isahc::http_client;
-
-#[cfg(test)]
-use crate::tests::http_client;
 
 const SESSION_KEY: &str = "tide.oidc";
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::common::authorizeurl::ParsedAuthorizeUrl;
 use async_lock::Mutex;
 use async_std::prelude::*;
 use async_std::sync::Arc;
@@ -9,23 +10,7 @@ use portpicker::pick_unused_port;
 use tide::prelude::*;
 use tide::Request;
 
-use crate::common::authorizeurl::ParsedAuthorizeUrl;
-
-// From here: <https://github.com/ramosbugs/openidconnect-rs/blob/cfa5af581ee100791f68bf099dd15fa3eb492c8b/src/jwt.rs#L489>
-const TEST_RSA_PUB_KEY: &str = "{
-            \"kty\": \"RSA\",
-            \"kid\": \"bilbo.baggins@hobbiton.example\",
-            \"use\": \"sig\",
-            \"n\": \"n4EPtAOCc9AlkeQHPzHStgAbgs7bTZLwUBZdR8_KuKPEHLd4rHVTeT\
-                     -O-XV2jRojdNhxJWTDvNd7nqQ0VEiZQHz_AJmSCpMaJMRBSFKrKb2wqV\
-                     wGU_NsYOYL-QtiWN2lbzcEe6XC0dApr5ydQLrHqkHHig3RBordaZ6Aj-\
-                     oBHqFEHYpPe7Tpe-OfVfHd1E6cS6M1FZcD1NNLYD5lFHpPI9bTwJlsde\
-                     3uhGqC0ZCuEHg8lhzwOHrtIQbS0FVbb9k3-tVTU4fg_3L_vniUFAKwuC\
-                     LqKnS2BYwdq_mzSnbLY7h_qixoR7jig3__kRhuaxwUkRz5iaiQkqgc5g\
-                     HdrNP5zw\",
-            \"e\": \"AQAB\"
-        }";
-
+// Public and private keys from here: <https://github.com/ramosbugs/openidconnect-rs/blob/cfa5af581ee100791f68bf099dd15fa3eb492c8b/src/jwt.rs#L489>
 const TEST_RSA_PRIV_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
          MIIEowIBAAKCAQEAn4EPtAOCc9AlkeQHPzHStgAbgs7bTZLwUBZdR8/KuKPEHLd4\n\
          rHVTeT+O+XV2jRojdNhxJWTDvNd7nqQ0VEiZQHz/AJmSCpMaJMRBSFKrKb2wqVwG\n\

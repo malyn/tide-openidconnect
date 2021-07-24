@@ -12,15 +12,11 @@
     clippy::unwrap_used
 )]
 
-#[cfg(not(test))]
 mod isahc;
 mod middleware;
 pub mod redirect_strategy;
 mod request_ext;
 mod route_ext;
-
-#[cfg(test)]
-mod tests;
 
 pub use crate::middleware::Config;
 pub use crate::middleware::OpenIdConnectMiddleware;
