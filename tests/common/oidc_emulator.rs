@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_lock::Mutex;
-use async_std::io;
+// use async_std::io;
 use async_std::sync::Arc;
 use chrono::{Duration, Utc};
 use openidconnect::{core::CoreIdTokenClaims, IssuerUrl, RedirectUrl};
@@ -52,11 +52,11 @@ const TEST_RSA_PRIV_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
          1Vre3XB9HH8MYBVB6UIexaAq4xSeoemRKTBesZro7OKjKT8/GmiO\
          -----END RSA PRIVATE KEY-----";
 
-pub struct Token {
-    pub access_token: String,
-    pub scopes: String,
-    pub userid: String,
-    pub nonce: String,
+struct Token {
+    access_token: String,
+    scopes: String,
+    userid: String,
+    nonce: String,
 }
 
 fn create_id_token(
@@ -128,6 +128,10 @@ impl OpenIdConnectEmulator {
         IssuerUrl::new(format!("http://localhost:{}/", self.port)).unwrap()
     }
 
+    // TODO Can we switch this to io::Result so that we are not binding to
+    // Tide in what should be a generic emulator? The problem is that the
+    // `.race()` method needs the same return types, so not sure how to
+    // handle that in the tests themselves...
     pub async fn run(&self) -> tide::Result<()> {
         let state = State {
             issuer_url: self.issuer_url(),
@@ -197,10 +201,21 @@ impl OpenIdConnectEmulator {
         Ok(())
     }
 
-    pub async fn add_token(&self, token: Token) -> String {
+    pub async fn add_token<S>(&self, access_token: S, scopes: S, userid: S, nonce: S) -> String
+    where
+        S: AsRef<str>,
+    {
         let authorization_code = "12345";
         let mut tokens = self.tokens.lock().await;
-        tokens.insert(authorization_code.to_string(), token);
+        tokens.insert(
+            authorization_code.to_string(),
+            Token {
+                access_token: access_token.as_ref().to_string(),
+                scopes: scopes.as_ref().to_string(),
+                userid: userid.as_ref().to_string(),
+                nonce: nonce.as_ref().to_string(),
+            },
+        );
         authorization_code.to_string()
     }
 }

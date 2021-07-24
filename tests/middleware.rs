@@ -1,10 +1,9 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-use async_lock::Mutex;
 use async_std::prelude::*;
 use async_std::task;
 use tide::{
-    http::headers::{COOKIE, LOCATION, SET_COOKIE},
+    http::headers::LOCATION,
     sessions::{MemoryStore, SessionMiddleware},
     Request, StatusCode,
 };
@@ -16,122 +15,9 @@ use tide_openidconnect::{
 };
 
 mod common;
-use common::oidc_emulator;
-
-struct SessionCookieJarMiddleware {
-    session_cookie: Arc<Mutex<Option<tide::http::Cookie<'static>>>>,
-}
-
-impl Default for SessionCookieJarMiddleware {
-    fn default() -> Self {
-        Self {
-            session_cookie: Arc::new(Mutex::new(None)),
-        }
-    }
-}
-
-#[surf::utils::async_trait]
-impl surf::middleware::Middleware for SessionCookieJarMiddleware {
-    async fn handle(
-        &self,
-        mut req: surf::Request,
-        client: surf::Client,
-        next: surf::middleware::Next<'_>,
-    ) -> surf::Result<surf::Response> {
-        // Add the session cookie, if we have one, to the request.
-        if let Some(cookie) = &*self.session_cookie.lock().await {
-            tide::log::trace!("Adding session cookie to request.");
-            req.set_header(COOKIE, cookie.to_string());
-        }
-
-        // Continue the request and collect the response.
-        let res = next.run(req, client).await?;
-
-        // Did we get a session cookie back? If so, either replace our
-        // current session cookie, or clear the existing session cookie
-        // if the new one has already expired (which is how servers
-        // ask the browser to delete a cookie).
-        if let Some(values) = res.header(SET_COOKIE) {
-            if let Some(value) = values.get(0) {
-                let mut session_cookie_guard = self.session_cookie.lock().await;
-
-                let cookie = tide::http::Cookie::parse(value.to_string()).unwrap();
-                if cookie
-                    .expires()
-                    .unwrap()
-                    .ge(&time::OffsetDateTime::now_utc())
-                {
-                    tide::log::trace!("Received new/updated session cookie from server.");
-                    *session_cookie_guard = Some(cookie);
-                } else {
-                    tide::log::trace!("Server removed session cookie.");
-                    *session_cookie_guard = None;
-                }
-            }
-        }
-
-        // Pass the response back up the middleware chain.
-        Ok(res)
-    }
-}
-
-#[derive(Debug, PartialEq)]
-struct ParsedAuthorizeUrl {
-    host: String,
-    path: String,
-    response_type: String,
-    client_id: String,
-    scopes: String,
-    state: Option<String>,
-    nonce: Option<String>,
-    redirect_uri: String,
-}
-
-impl ParsedAuthorizeUrl {
-    fn default() -> Self {
-        Self {
-            host: "localhost".to_owned(),
-            path: "/authorization".to_owned(),
-            response_type: "code".to_owned(),
-            client_id: "CLIENT-ID".to_string(),
-            scopes: "openid".to_owned(),
-            state: None,
-            nonce: None,
-            redirect_uri: "http://localhost/callback".to_string(),
-        }
-    }
-
-    fn from_url(s: impl AsRef<str>) -> Self {
-        let url = openidconnect::url::Url::parse(s.as_ref()).unwrap();
-        let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
-
-        Self {
-            host: url.host_str().unwrap().to_owned(),
-            path: url.path().to_owned(),
-            response_type: query.get("response_type").unwrap().to_owned(),
-            client_id: query.get("client_id").unwrap().to_owned(),
-            scopes: query.get("scope").unwrap().to_owned(),
-            state: Some(query.get("state").unwrap().to_owned()),
-            nonce: Some(query.get("nonce").unwrap().to_owned()),
-            redirect_uri: query.get("redirect_uri").unwrap().to_owned(),
-        }
-    }
-
-    fn with_nonce(self, nonce: Option<String>) -> Self {
-        Self { nonce, ..self }
-    }
-
-    fn with_scopes(self, scopes: impl AsRef<str>) -> Self {
-        Self {
-            scopes: scopes.as_ref().to_owned(),
-            ..self
-        }
-    }
-
-    fn with_state(self, state: Option<String>) -> Self {
-        Self { state, ..self }
-    }
-}
+use common::authorizeurl::ParsedAuthorizeUrl;
+use common::cookiejar::SessionCookieJarMiddleware;
+use common::oidc_emulator::OpenIdConnectEmulator;
 
 const SECRET: [u8; 32] = *b"secrets must be >= 32 bytes long";
 
@@ -146,10 +32,10 @@ fn get_config(issuer_url: IssuerUrl) -> tide_openidconnect::Config {
 }
 
 #[test]
-fn hello_world() -> tide::Result<()> {
+fn middleware_provides_redirect_route() -> tide::Result<()> {
     // tide::log::with_level(tide::log::LevelFilter::Warn);
     task::block_on(async {
-        let oidc_emulator = Arc::new(oidc_emulator::OpenIdConnectEmulator::new(
+        let oidc_emulator = Arc::new(OpenIdConnectEmulator::new(
             RedirectUrl::new("http://localhost/callback".to_string()).unwrap(),
         ));
         let oidc_server = oidc_emulator.run();
@@ -168,6 +54,26 @@ fn hello_world() -> tide::Result<()> {
 
             app.with(OpenIdConnectMiddleware::new(&get_config(test_emulator.issuer_url())).await);
 
+            // Add the `/` route, which we use to check the authed/unauthed
+            // status status of the request. Note that we would also like
+            // to use this handler to confirm that session state is preserved
+            // across the auth procedure (which it is), but that behavior
+            // is mostly a side-effect of the SessionMiddleware's cookie
+            // setting (which *this* middleware requires be set to Lax).
+            // So we could test that, but A) we would only be testing that
+            // we set that to Lax earlier in this test function, and more
+            // importantly B) wouldn't actually be testing the SameSite
+            // setting anyway, since we are manually flowing the session
+            // cookie across requests without even paying attention to the
+            // SameSite attribute in the response. However, even with all
+            // of that said, we still want to store (and later, check)
+            // app-level session state, since we want to confirm that our
+            // logout setting -- clear auth data vs. destroy session --
+            // preserves/does not preserve that app state. Note that if
+            // we destroy the session then the session id (and thus, cookie)
+            // is no longer valid, whereas if we just clear the auth state
+            // then the id is still valid and it is only the auth state
+            // inside that session that is removed.
             app.at("/").get(|mut req: Request<()>| async move {
                 // Get/Update the request counter (used to verify session state
                 // across login/logout operations).
@@ -207,7 +113,6 @@ fn hello_world() -> tide::Result<()> {
             let authorize_url = ParsedAuthorizeUrl::from_url(
                 res.header(LOCATION).unwrap().get(0).unwrap().as_str(),
             );
-            println!("authorize_url: {:?}", authorize_url);
             let state = authorize_url.state.clone().unwrap().to_string();
             let nonce = authorize_url.nonce.clone().unwrap();
             assert_eq!(
@@ -221,12 +126,7 @@ fn hello_world() -> tide::Result<()> {
             // path.
             let userid = "1234567890";
             let authorization_code = test_emulator
-                .add_token(oidc_emulator::Token {
-                    access_token: "atoken".to_string(),
-                    scopes: "openid".to_string(),
-                    userid: userid.to_string(),
-                    nonce,
-                })
+                .add_token("atoken", "openid", userid, &nonce)
                 .await;
 
             let res = client
@@ -269,6 +169,8 @@ fn hello_world() -> tide::Result<()> {
             Ok(())
         });
 
+        // Wait for the test to complete (or the OpenID Connect emulator
+        // server to exit, although that would be unexpected).
         oidc_server.race(test).await
     })
 }
