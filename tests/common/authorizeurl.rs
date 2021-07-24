@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-#[derive(Debug, PartialEq)]
+use surf::http::headers::LOCATION;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParsedAuthorizeUrl {
     pub host: String,
     pub path: String,
@@ -24,6 +26,10 @@ impl ParsedAuthorizeUrl {
             nonce: None,
             redirect_uri: "http://localhost/callback".to_string(),
         }
+    }
+
+    pub fn from_response(res: &surf::Response) -> Self {
+        Self::from_url(res.header(LOCATION).unwrap().get(0).unwrap().as_str())
     }
 
     pub fn from_url(s: impl AsRef<str>) -> Self {

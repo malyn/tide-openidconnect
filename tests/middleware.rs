@@ -110,29 +110,27 @@ fn middleware_provides_redirect_route() -> tide::Result<()> {
             // response during the token exchange request.
             let res = client.get("/login").await?;
             assert_eq!(res.status(), StatusCode::Found);
-            let authorize_url = ParsedAuthorizeUrl::from_url(
-                res.header(LOCATION).unwrap().get(0).unwrap().as_str(),
-            );
-            let state = authorize_url.state.clone().unwrap().to_string();
-            let nonce = authorize_url.nonce.clone().unwrap();
+            let authorize_url = ParsedAuthorizeUrl::from_response(&res);
             assert_eq!(
-                authorize_url.with_nonce(None).with_state(None),
+                authorize_url.clone().with_nonce(None).with_state(None),
                 ParsedAuthorizeUrl::default(),
             );
 
-            // Prepare the auth provider's token response, then issue the callback
-            // to our middleware, which completes the authentication process (by
-            // exchaning the code for a token) and then redirects to the landing
-            // path.
+            // Add the token to our emulator, then issue the callback to
+            // our middleware (using the authorization code assigned to
+            // the token by the emulator). This completes the authentication
+            // process (by exchanging the code for a token) and redirects
+            // the client to the landing path.
             let userid = "1234567890";
             let authorization_code = test_emulator
-                .add_token("atoken", "openid", userid, &nonce)
+                .add_token("atoken", "openid", userid, &authorize_url.nonce.unwrap())
                 .await;
 
             let res = client
                 .get(format!(
                     "/callback?code={}&state={}",
-                    authorization_code, state
+                    authorization_code,
+                    authorize_url.state.unwrap(),
                 ))
                 .await?;
             assert_eq!(res.status(), StatusCode::Found);
