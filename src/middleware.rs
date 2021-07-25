@@ -311,12 +311,6 @@ impl OpenIdConnectMiddleware {
                 .request_async(http_client)
                 .await
                 .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
-            // TODO Should these be added to the request extension? Seems
-            // like roles might be useful/required for any sort of AuthZ
-            // decisions, and the access token for accessing resources
-            // of the remote auth provider (such as GitHub APIs).
-            println!("Access token: {}", token_response.access_token().secret());
-            println!("Scopes: {:?}", token_response.scopes());
 
             // Get the claims and verify the nonce.
             let claims = token_response
@@ -330,10 +324,6 @@ impl OpenIdConnectMiddleware {
                 })?
                 .claims(&self.client.id_token_verifier(), &nonce)
                 .map_err(|error| tide::http::Error::new(StatusCode::Unauthorized, error))?;
-            // TODO Output these as trace data? Or maybe just remove this
-            // logging entirely...
-            println!("ID token: {:?}", claims);
-            println!("User id: {}", claims.subject().as_str());
 
             // Add the user id to the session state in order to mark this
             // session as authenticated.
