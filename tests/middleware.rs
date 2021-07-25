@@ -358,3 +358,39 @@ async fn login_and_auth_only_logout() -> http_types::Result<()> {
         })
         .await
 }
+
+#[async_std::test]
+async fn logout_can_clear_idp_state() -> http_types::Result<()> {
+    // tide::log::with_level(tide::log::LevelFilter::Warn);
+    OpenIdConnectEmulator::new(RedirectUrl::new("http://localhost/callback".to_string()).unwrap())
+        .run_with_emulator(|emu| async move {
+            let mut app = create_test_server();
+            let config = tide_openidconnect::Config {
+                idp_logout_url: Some("http://idp.logout".to_string()),
+                ..get_config(&emu.issuer_url())
+            };
+            app.with(OpenIdConnectMiddleware::new(&config).await);
+            let client = app.client().with(SessionCookieJarMiddleware::default());
+
+            // Log the user in.
+            let res = client.get("/login").await?;
+            assert_eq!(res.status(), StatusCode::Found);
+            let authorize_url = ParsedAuthorizeUrl::from_response(&res);
+
+            let callback_url = emu
+                .add_token("atoken", "openid", "id", &authorize_url)
+                .await;
+
+            let res = client.get(callback_url).await?;
+            assert_redirect(&res, "/");
+
+            // Now log out; the default configuration would take us back
+            // to the logout landing path, but in this test we have enabled
+            // IdP logout and so we are redirected to that URL instead.
+            let res = client.get("/logout").await?;
+            assert_redirect(&res, "http://idp.logout");
+
+            Ok(())
+        })
+        .await
+}
