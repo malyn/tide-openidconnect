@@ -1,4 +1,4 @@
-use surf::{http::headers::LOCATION, StatusCode};
+use http_types::{headers::LOCATION, StatusCode};
 use tide::sessions::{MemoryStore, SessionMiddleware};
 
 use tide_openidconnect::{ClientId, ClientSecret, IssuerUrl, OpenIdConnectRequestExt, RedirectUrl};

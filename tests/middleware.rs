@@ -2,13 +2,12 @@ use crate::common::authorizeurl::ParsedAuthorizeUrl;
 use crate::common::cookiejar::SessionCookieJarMiddleware;
 use crate::common::oidc_emulator::OpenIdConnectEmulator;
 use crate::common::{assert_redirect, assert_response, create_test_server, get_config};
-use async_std::prelude::*;
-use tide::{Request, StatusCode};
+use http_types::StatusCode;
 use tide_testing::TideTestingExt;
 
-use tide_openidconnect::{OpenIdConnectMiddleware, OpenIdConnectRouteExt, RedirectUrl};
+use tide_openidconnect::{OpenIdConnectMiddleware, RedirectUrl};
 
-mod common;
+pub mod common;
 
 #[async_std::test]
 async fn middleware_can_be_initialized() -> tide::Result<()> {
@@ -234,32 +233,6 @@ async fn redirect_route_panics_on_missing_session_middleware() {
         Ok(())
     })
     .await;
-}
-
-#[async_std::test]
-async fn authenticated_routes_require_login() -> http_types::Result<()> {
-    // tide::log::with_level(tide::log::LevelFilter::Warn);
-    OpenIdConnectEmulator::new(RedirectUrl::new("http://localhost/callback".to_string()).unwrap())
-        .run_with_emulator(|emu| async move {
-            let mut app = create_test_server();
-            app.with(OpenIdConnectMiddleware::new(&get_config(&emu.issuer_url())).await);
-
-            app.at("/needsauth")
-                .authenticated()
-                .get(|_req: Request<()>| -> std::pin::Pin<Box<dyn Future<Output = tide::Result> + Send>> {
-                    panic!(
-                        "An unauthenticated request should not have made it to an `authenticated()` handler."
-                    );
-                });
-
-            let client = app.client().with(SessionCookieJarMiddleware::default());
-
-            let res = client.get("/needsauth").await?;
-            assert_redirect(&res, "/login");
-
-            Ok(())
-        })
-        .await
 }
 
 #[async_std::test]
