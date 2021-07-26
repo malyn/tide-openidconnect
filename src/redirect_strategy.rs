@@ -1,4 +1,16 @@
-//! Strategies for different forms of browser redirects.
+//! Browser redirect strategies.
+//!
+//! Provides multiple browser redirect strategies for use by the
+//! [`authenticated()`](crate::OpenIdConnectRouteExt::authenticated)
+//! route extension:
+//!
+//! - [`HttpRedirect`] is a standard HTTP redirect that uses a `302
+//!   Found` response with a `Location` header. This strategy works well
+//!   if all of your requests are `GET` operations, or if your Identity
+//!   Provider returns the proper CORS preflight headers.
+//! - [`ClientSideRefresh`] allows you to use *client-side* code to
+//!   redirect the browser and can be used to avoid CORS issues, but may
+//!   add additional latency and browser window flashing.
 
 use tide::{
     http::{
@@ -8,24 +20,22 @@ use tide::{
     Redirect, Response,
 };
 
-/// Strategy for redirecting the browser to a (login) path after receiving
-/// an unauthenticated request to an authenticated route.
+/// Redirect the browser to another location.
 pub trait RedirectStrategy: Send + Sync {
-    /// Gets the provider-specific user id of the authenticated user, or
-    /// None if the request has not been authenticated.
+    /// Redirects the browser to the location configured in the
+    /// strategy.
     fn redirect(&self) -> Response;
 }
 
-/// Redirects the browser using an HTTP-level ("302 Found" with "Location"
-/// header) redirect.
+/// HTTP-level redirect: `302 Found` with a `Location` header.
 #[derive(Debug)]
 pub struct HttpRedirect {
     path: String,
 }
 
 impl HttpRedirect {
-    /// Creates a new HttpDirect with a mandatory path to which the browser
-    /// will be redirected.
+    /// Create a new instance, with the location to which this strategy
+    /// will redirect the browser.
     pub fn new(path: impl AsRef<str>) -> Self {
         Self {
             path: path.as_ref().to_string(),
@@ -39,8 +49,8 @@ impl RedirectStrategy for HttpRedirect {
     }
 }
 
-/// Redirects the browser using a client-side refresh; by default, a
-/// "meta refresh" tag.
+/// Client-side "redirect:" by default, a meta refresh tag, but can be
+/// configured to return a custom response.
 #[derive(Debug)]
 pub struct ClientSideRefresh {
     body: String,
@@ -48,15 +58,19 @@ pub struct ClientSideRefresh {
 }
 
 impl ClientSideRefresh {
-    /// Creates a new ClientSideRefresh that redirects the browser to the
-    /// given path.
+    /// Create a new instance, with the location to which this strategy
+    /// will redirect the browser.
+    ///
+    /// The redirect will be implemented as client-side "Meta Refresh"
+    /// that instructs the browser to navigate to the given path
+    /// immediately after loading the page.
     pub fn from_path(path: impl AsRef<str>) -> Self {
         let body = format!("<!DOCTYPE html><html><head><meta http-equiv=\"refresh\" content=\"0;URL='{0}'\" /></head><body></body></html>", path.as_ref());
         ClientSideRefresh::from_body(body)
     }
 
-    /// Creates a new ClientSideRefresh that redirects the browser to the
-    /// using the contents of the given response body.
+    /// Create a new instance, with the raw HTML body that will be
+    /// returned to the browser in order to trigger the refresh.
     pub fn from_body(body: impl AsRef<str>) -> Self {
         Self {
             body: body.as_ref().to_string(),
@@ -65,20 +79,10 @@ impl ClientSideRefresh {
     }
 
     /// Adds a header to the client-side refresh response, usually in
-    /// cases where a client-side framework is sending AJAX requests and
-    /// will use the presence of a specific header as a signal that to
-    /// issue a client-side redirect.
-    ///
-    /// This is the only way to get an HTMX AJAX request to silently go
-    /// through the auth process. That is because HTMX is (sometimes)
-    /// doing a POST, which we are redirecting to the OpenID Connect
-    /// provider, and thus requires that provider to expose the proper
-    /// CORS headers. But it doesn't, so we get a CORS error. Using a
-    /// client-side redirect (by way of the HX-Redirect header *and a
-    /// 200 OK, not 302 Found* response), prevents the CORS check
-    /// because the client is just navigating to another location on
-    /// its own.
-    /// TODO Add the above to our "Everything I know about CSRF" blog post.
+    /// cases where a client-side framework is using the
+    /// `XMLHttpRequest` or `fetch` APIs to send requests, and watches
+    /// for a specific response header in order to effect a client-side
+    /// redirect.
     pub fn with_header(mut self, name: impl Into<HeaderName>, values: impl ToHeaderValues) -> Self {
         self.headers.push((
             name.into(),

@@ -13,7 +13,7 @@ use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
 
 const SESSION_KEY: &str = "tide.oidc";
 
-/// Required OpenID Connect configuration.
+/// Middleware configuration.
 #[derive(Debug, Deserialize)]
 pub struct Config {
     /// Issuer URL used to A) retrieve the OpenID Connect provider
@@ -32,23 +32,25 @@ pub struct Config {
     pub redirect_url: RedirectUrl,
 
     /// Optional URL used to log the user out of the identity provider
-    /// as part of the application logout process. If provided, the browser
-    /// will be redirected to this URL *after* clearing the auth info from
-    /// the Tide session.
+    /// as part of the application logout process. If provided, the
+    /// browser will be redirected to this URL *after* clearing the auth
+    /// info from the Tide session.
     ///
-    /// Note that most (all?) identity providers allow you to include a
-    /// query parameter that will cause the browser to redirect to a
-    /// post-logout page in the application after the identity provider
-    /// credentials have been cleared from the browser; you should almost
-    /// certainly populate that query parameter to ensure that the user
-    /// ends back up at your site after the logout. In most cases this
-    /// will be the same as the `logout_landing_path`, but unfortunately
-    /// the middleware cannot autopopulate the query parameter with that
-    /// value because it varies from provider to provider.
+    /// Note that most Identity Providers allow you to include a
+    /// provider-specific query parameter in this URL. The browser will
+    /// be redirected to that URL after the logout process has been
+    /// completed and the provider's credentials have been cleared from
+    /// the browser.
+    ///
+    /// You should almost certainly populate that query parameter so
+    /// that the user ends up at your site after the logout. In most
+    /// cases the value of this parameter will be the full URL to your
+    /// site's
+    /// [`logout_landing_path`](OpenIdConnectMiddleware::with_logout_landing_path).
     ///
     /// Finally, identity providers often require you to register the
-    /// logout URL in their configuration (in the same way that you need
-    /// to register your callback URL with them).
+    /// logout URL in their configuration, usually in the same place where
+    /// you register your [redirect URL](Self::redirect_url).
     pub idp_logout_url: Option<String>,
 }
 
@@ -58,50 +60,7 @@ enum MiddlewareSessionState {
     PostAuth(SubjectIdentifier, AccessToken, Vec<Scope>),
 }
 
-/// # Middleware to enable OpenID Connect-based authentication
-///
-/// ... add docs ...
-///
-/// ## Example
-/// ```no_run
-/// use tide_openidconnect::{self, OpenIdConnectRequestExt};
-///
-/// # async_std::task::block_on(async {
-/// let mut app = tide::new();
-///
-/// // OpenID Connect middleware *requires* session storage.
-/// app.with(tide::sessions::SessionMiddleware::new(
-///     tide::sessions::MemoryStore::new(),
-///     b"don't actually use a hardcoded secret",
-/// ));
-///
-/// // Initialize the OpenID Connect middleware; normally all of these
-/// // configuration values would come from an environment-specific config
-/// // file, and in fact that is why they are in their own struct (so that
-/// // you can deserialize that struct from a file or environment variables).
-/// app.with(
-///     tide_openidconnect::OpenIdConnectMiddleware::new(
-///         &tide_openidconnect::Config {
-///             issuer_url: tide_openidconnect::IssuerUrl::new("https://your-tenant-name.us.auth0.com/".to_string()).unwrap(),
-///             client_id: tide_openidconnect::ClientId::new("app-id-goes-here".to_string()),
-///             client_secret: tide_openidconnect::ClientSecret::new("app-secret-goes-here".to_string()),
-///             redirect_url: tide_openidconnect::RedirectUrl::new("http://your.cool.site/callback".to_string()).unwrap(),
-///             idp_logout_url: None,
-///         }
-///     )
-///     .await,
-/// );
-///
-/// app.at("/").get(|req: tide::Request<()>| async move {
-///     Ok(format!(
-///         "If you got this far, then the user is authenticated, and their user id is {:?}",
-///         req.user_id()
-///     ))
-/// });
-///
-/// # })
-/// ```
-
+/// Open ID Connect Middleware.
 pub struct OpenIdConnectMiddleware {
     login_path: String,
     redirect_url: RedirectUrl,
@@ -131,19 +90,47 @@ impl std::fmt::Debug for OpenIdConnectMiddleware {
 }
 
 impl OpenIdConnectMiddleware {
-    /// Creates a new OpenIdConnectMiddleware with a mandatory Issuer URL,
-    /// Client Id, Client Secret, and Redirect URL.
+    /// Create a new instance.
+    ///
+    /// Requests the Identity Provider's metadata and uses that to initialize
+    /// various provider-specific configuration inside of the middleware.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the OpenID Connect provider metadata could not be
+    /// retrieved or does not match the configured
+    /// [`issuer_url`](Config::issuer_url).
     ///
     /// # Defaults
     ///
     /// The defaults for OpenIdConnectMiddleware are:
-    /// - redirect strategy: HttpRedirect
-    /// - login path: "/login"
-    /// - scopes: ["openid"]
-    /// - login landing path: "/"
-    /// - logout path: "/logout"
-    /// - logout destroys session: true
-    /// - logout landing path: "/"
+    /// - redirect strategy: [`HttpRedirect`](crate::redirect_strategy::HttpRedirect)
+    /// - login path: `/login`
+    /// - scopes: `["openid"]`
+    /// - login landing path: `/`
+    /// - logout path: `/logout`
+    /// - logout destroys session: `true`
+    /// - logout landing path: `/`
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use tide_openidconnect::{self};
+    ///
+    /// # async_std::task::block_on(async {
+    /// let config = tide_openidconnect::Config {
+    ///     // ... set/load config ...
+    /// #   issuer_url: tide_openidconnect::IssuerUrl::new("https://your-tenant-name.us.auth0.com/".to_string()).unwrap(),
+    /// #   client_id: tide_openidconnect::ClientId::new("app-id-goes-here".to_string()),
+    /// #   client_secret: tide_openidconnect::ClientSecret::new("app-secret-goes-here".to_string()),
+    /// #   redirect_url: tide_openidconnect::RedirectUrl::new("http://your.cool.site/callback".to_string()).unwrap(),
+    /// #   idp_logout_url: None,
+    /// };
+    /// let middleware = tide_openidconnect::OpenIdConnectMiddleware::new(&config)
+    ///     .await
+    ///     .with_logout_landing_path("/loggedout");
+    /// # })
+    /// ```
     pub async fn new(config: &Config) -> Self {
         // Get the OpenID Connect provider metadata.
         let provider_metadata =
@@ -181,7 +168,7 @@ impl OpenIdConnectMiddleware {
     /// middleware in order to redirect the browser to the OpenID Connect
     /// authentication page.
     ///
-    /// Defaults to "/login".
+    /// Defaults to `/login`
     pub fn with_login_path(mut self, login_path: &str) -> Self {
         self.login_path = login_path.to_string();
         self
@@ -189,7 +176,7 @@ impl OpenIdConnectMiddleware {
 
     /// Adds one or more scopes to the OpenID Connect request.
     ///
-    /// Defaults to "openid" (which is the minimum required scope).
+    /// Defaults to `openid` (which is the minimum required scope).
     pub fn with_scopes(mut self, scopes: &[impl AsRef<str>]) -> Self {
         self.scopes = scopes
             .iter()
@@ -201,9 +188,19 @@ impl OpenIdConnectMiddleware {
     /// Sets the path where the browser will be sent after a successful
     /// login sequence.
     ///
-    /// Defaults to "/".
+    /// Defaults to `/`
     pub fn with_login_landing_path(mut self, login_landing_path: &str) -> Self {
         self.login_landing_path = login_landing_path.to_string();
+        self
+    }
+
+    /// Sets the path to the "logout" route that will be intercepted by
+    /// the middleware in order to clear the sessions's authentication
+    /// state.
+    ///
+    /// Defaults to `/logout`
+    pub fn with_logout_path(mut self, logout_path: &str) -> Self {
+        self.logout_path = logout_path.to_string();
         self
     }
 
@@ -218,10 +215,12 @@ impl OpenIdConnectMiddleware {
     /// status of collapsed UI elements, etc. would be safe to retain,
     /// whereas the user name, form content, etc. needs to be cleared
     /// after the logout process (which can be done by, for example,
-    /// configuring the `logout_landing_path` to go to a route that cleans
-    /// up personally-identifying information after the logout completes).
+    /// configuring the
+    /// [`logout_landing_path`](Self::with_logout_landing_path) to go to
+    /// a route that cleans up personally-identifying information after
+    /// the logout completes).
     ///
-    /// Defaults to true.
+    /// Defaults to `true`
     pub fn with_logout_destroys_session(mut self, logout_destroys_session: bool) -> Self {
         self.logout_destroys_session = logout_destroys_session;
         self
@@ -230,17 +229,16 @@ impl OpenIdConnectMiddleware {
     /// Sets the path where the browser will be sent after the logout
     /// sequence.
     ///
-    /// Defaults to "/".
+    /// Defaults to `/`
     pub fn with_logout_landing_path(mut self, logout_landing_path: &str) -> Self {
         self.logout_landing_path = logout_landing_path.to_string();
         self
     }
 
-    /// Sets the function used to generate responses to unauthenticated
-    /// requests.
+    /// Sets the trait used to generate redirect responses to
+    /// unauthenticated requests.
     ///
-    /// Defaults to building a "302 Found" response with a Location
-    /// header.
+    /// Defaults to [`HttpRedirect`](crate::redirect_strategy::HttpRedirect)
     pub fn with_unauthenticated_redirect_strategy<R>(mut self, redirect_strategy: R) -> Self
     where
         R: RedirectStrategy + 'static,

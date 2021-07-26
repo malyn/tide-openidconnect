@@ -3,32 +3,23 @@ use std::sync::Arc;
 use crate::redirect_strategy::RedirectStrategy;
 use tide::Request;
 
-pub(crate) enum OpenIdConnectRequestExtData {
-    Unauthenticated {
-        redirect_strategy: Arc<dyn RedirectStrategy>,
-    },
-    Authenticated {
-        access_token: String,
-        scopes: Vec<String>,
-        user_id: String,
-    },
-}
-
-/// Provides access to request-level OpenID Connect authorization data.
+/// Provides access to request-level authentication data.
 pub trait OpenIdConnectRequestExt {
-    /// Returns `true` if the request is authenticated, `false` otherwise.
+    /// Returns `true` if the request is authenticated, `false`
+    /// otherwise.
     fn is_authenticated(&self) -> bool;
 
-    /// Gets the access token for the authenticated user, or None if the
-    /// request has not been authenticated.
+    /// Gets the Identity Provider-specific access token for the
+    /// authenticated user, or `None` if the session has not been
+    /// authenticated.
     fn access_token(&self) -> Option<String>;
 
-    /// Gets the list of scopes authorized by/granted to the user, or None
-    /// if the request has not been authenticated.
+    /// Gets the list of scopes authorized by/granted to the user, or
+    /// `None` if the session has not been authenticated.
     fn scopes(&self) -> Option<Vec<String>>;
 
-    /// Gets the provider-specific user id of the authenticated user, or
-    /// None if the request has not been authenticated.
+    /// Gets the Identity Provider-specific user id of the authenticated
+    /// user, or `None` if the session has not been authenticated.
     fn user_id(&self) -> Option<String>;
 }
 
@@ -65,6 +56,17 @@ where
             _ => None,
         }
     }
+}
+
+pub(crate) enum OpenIdConnectRequestExtData {
+    Unauthenticated {
+        redirect_strategy: Arc<dyn RedirectStrategy>,
+    },
+    Authenticated {
+        access_token: String,
+        scopes: Vec<String>,
+        user_id: String,
+    },
 }
 
 pub(crate) trait OpenIdConnectRequestExtInternal {

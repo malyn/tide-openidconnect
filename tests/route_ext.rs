@@ -58,3 +58,42 @@ async fn authenticated_routes_require_login() -> http_types::Result<()> {
         })
         .await
 }
+
+#[async_std::test]
+async fn authentication_protects_subsequent_verbs() -> http_types::Result<()> {
+    // tide::log::with_level(tide::log::LevelFilter::Warn);
+    OpenIdConnectEmulator::new(RedirectUrl::new("http://localhost/callback".to_string()).unwrap())
+        .run_with_emulator(|emu| async move {
+            let mut app = create_test_server();
+            app.with(OpenIdConnectMiddleware::new(&get_config(&emu.issuer_url())).await);
+
+            // Additional routes, some protected, others unprotected.
+            app.at("/")
+                .get(|_req: Request<()>| async { Ok("Unprotected route") });
+
+            app.at("/secret")
+                .authenticated()
+                .get(|_req: Request<()>| async { Ok("Protected GET") })
+                .post(|_req: Request<()>| async { Ok("Protected POST") });
+
+            app.at("/semi-secret")
+                .get(|_req: Request<()>| async { Ok("*Unprotected* GET") })
+                .authenticated()
+                .post(|_req: Request<()>| async { Ok("Protected POST") });
+
+            let client = app.client().with(SessionCookieJarMiddleware::default());
+
+            // All HTTP handlers *before* the call to `authenticated()`
+            // do not require authentication.
+            assert_response(&mut client.get("/").await?, "Unprotected route").await;
+            assert_response(&mut client.get("/semi-secret").await?, "*Unprotected* GET").await;
+
+            // Handlers after the call require authentication.
+            assert_redirect(&client.get("/secret").await?, "/login");
+            assert_redirect(&client.post("/secret").await?, "/login");
+            assert_redirect(&client.post("/semi-secret").await?, "/login");
+
+            Ok(())
+        })
+        .await
+}
