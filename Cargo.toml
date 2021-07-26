@@ -28,3 +28,4 @@ surf = "2.2.0"
 tide = "0.16.0"
 tide-testing = "0.1"
 time = "0.2.27"
+uuid = { version = "0.8", features = ["v4"] }

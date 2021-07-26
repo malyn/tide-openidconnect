@@ -9,6 +9,7 @@ use openidconnect::{core::CoreIdTokenClaims, IssuerUrl, RedirectUrl};
 use portpicker::pick_unused_port;
 use tide::prelude::*;
 use tide::Request;
+use uuid::Uuid;
 
 // Public and private keys from here: <https://github.com/ramosbugs/openidconnect-rs/blob/cfa5af581ee100791f68bf099dd15fa3eb492c8b/src/jwt.rs#L489>
 const TEST_RSA_PRIV_KEY: &str = "-----BEGIN RSA PRIVATE KEY-----\n\
@@ -204,8 +205,8 @@ impl OpenIdConnectEmulator {
     where
         S: AsRef<str>,
     {
-        // TODO Generate a random (GUID?) authorization_code.
-        let authorization_code = "12345";
+        // Generate a random authorization_code.
+        let authorization_code = Uuid::new_v4().to_hyphenated();
 
         // Create the token and add it to the emulator.
         let mut tokens = self.tokens.lock().await;
