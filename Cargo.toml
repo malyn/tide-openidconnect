@@ -2,8 +2,13 @@
 name = "tide-openidconnect"
 version = "0.1.0"
 authors = ["Michael Alyn Miller <malyn@strangeGizmo.com>"]
+description = "OpenID Connect middleware for Tide"
+keywords = ["tide", "openid", "authentication"]
+categories = ["authentication", "web-programming", "web-programming::http-server"]
 edition = "2018"
-publish = false
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/malyn/tide-openidconnect"
 
 [dependencies]
 futures-lite = "1.11"
