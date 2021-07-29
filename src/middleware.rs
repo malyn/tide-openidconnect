@@ -375,7 +375,7 @@ where
             if self.logout_destroys_session {
                 req.session_mut().destroy();
             } else {
-                req.session_mut().remove(&SESSION_KEY);
+                req.session_mut().remove(SESSION_KEY);
             }
 
             // Redirect the user now that their authentication state has
