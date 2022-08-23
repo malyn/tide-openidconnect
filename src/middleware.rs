@@ -171,6 +171,7 @@ impl OpenIdConnectMiddleware {
     /// Defaults to `/login`
     pub fn with_login_path(mut self, login_path: &str) -> Self {
         self.login_path = login_path.to_string();
+        self.redirect_strategy = Arc::new(HttpRedirect::new(self.login_path.clone()));
         self
     }
 
