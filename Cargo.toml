@@ -1,6 +1,6 @@
 [package]
 name = "tide-openidconnect"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Michael Alyn Miller <malyn@strangeGizmo.com>"]
 description = "OpenID Connect middleware for Tide"
 keywords = ["tide", "openid", "authentication"]
@@ -12,18 +12,18 @@ repository = "https://github.com/malyn/tide-openidconnect"
 exclude = [ ".editorconfig", ".gitattributes", ".github", ".gitignore" ]
 
 [dependencies]
-futures-lite = "1.11"
+futures-lite = "1"
 http = "0.2"
-isahc = "1.4.0"
-once_cell = "1.7.2"
-openidconnect = { version = "2.0.1", default-features = false }
-serde = "1.0.125"
+isahc = "1"
+once_cell = "1"
+openidconnect = { version = "^3.3", default-features = false }
+serde = "1.0"
 thiserror = "1.0"
-tide = { version = "0.16.0", default-features = false, features = ["sessions"] }
+tide = { version = "0.16", default-features = false, features = ["sessions"] }
 
 [dev-dependencies]
 async-lock = "2.4.0"
-async-std = { version = "1.9.0", features = ["attributes"] }
+async-std = { version = "1.12", features = ["attributes"] }
 chrono = "0.4"
 config = "0.11.0"
 dotenv = "0.15.0"
@@ -34,4 +34,4 @@ surf = "2.2.0"
 tide = "0.16.0"
 tide-testing = "0.1"
 time = "0.2.27"
-uuid = { version = "0.8", features = ["v4"] }
+uuid = { version = "^1.4", features = ["v4"] }
