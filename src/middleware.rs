@@ -3,10 +3,11 @@ use std::sync::Arc;
 use crate::isahc::http_client;
 use crate::redirect_strategy::{HttpRedirect, RedirectStrategy};
 use crate::request_ext::OpenIdConnectRequestExtData;
+use openidconnect::core::{CoreGenderClaim, CoreUserInfoClaims};
 use openidconnect::{
     core::{CoreClient, CoreProviderMetadata, CoreResponseType},
     AccessToken, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken,
-    IssuerUrl, Nonce, OAuth2TokenResponse, RedirectUrl, Scope, SubjectIdentifier,
+    IssuerUrl, Nonce, OAuth2TokenResponse, RedirectUrl, Scope, StandardClaims, SubjectIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use tide::{http::Method, Middleware, Next, Redirect, Request, StatusCode};
@@ -57,7 +58,12 @@ pub struct Config {
 #[derive(Debug, Deserialize, Serialize)]
 enum MiddlewareSessionState {
     PreAuth(CsrfToken, Nonce),
-    PostAuth(SubjectIdentifier, AccessToken, Vec<Scope>),
+    PostAuth(
+        SubjectIdentifier,
+        AccessToken,
+        Vec<Scope>,
+        StandardClaims<CoreGenderClaim>,
+    ),
 }
 
 /// Open ID Connect Middleware.
@@ -323,6 +329,13 @@ impl OpenIdConnectMiddleware {
                 .claims(&self.client.id_token_verifier(), &nonce)
                 .map_err(|error| tide::http::Error::new(StatusCode::Unauthorized, error))?;
 
+            // Get user info
+            let user_info_request = self
+                .client
+                .user_info(token_response.access_token().clone(), None)?;
+            let user_info: CoreUserInfoClaims =
+                user_info_request.request_async(http_client).await?;
+
             // Add the user id to the session state in order to mark this
             // session as authenticated.
             req.session_mut()
@@ -332,6 +345,7 @@ impl OpenIdConnectMiddleware {
                         claims.subject().clone(),
                         token_response.access_token().clone(),
                         token_response.scopes().unwrap_or(&self.scopes).clone(),
+                        user_info.standard_claims().clone(),
                     ),
                 )
                 .map_err(|error| tide::http::Error::new(StatusCode::InternalServerError, error))?;
@@ -394,12 +408,17 @@ where
             // process), then augment the request with the authentication
             // status.
             match req.session().get(SESSION_KEY) {
-                Some(MiddlewareSessionState::PostAuth(subject, access_token, scopes)) => req
-                    .set_ext(OpenIdConnectRequestExtData::Authenticated {
-                        user_id: subject.to_string(),
-                        access_token: access_token.secret().to_string(),
-                        scopes: scopes.iter().map(|s| s.to_string()).collect(),
-                    }),
+                Some(MiddlewareSessionState::PostAuth(
+                    subject,
+                    access_token,
+                    scopes,
+                    user_info,
+                )) => req.set_ext(OpenIdConnectRequestExtData::Authenticated {
+                    user_id: subject.to_string(),
+                    access_token: access_token.secret().to_string(),
+                    scopes: scopes.iter().map(|s| s.to_string()).collect(),
+                    user_info: user_info.clone(),
+                }),
                 _ => req.set_ext(OpenIdConnectRequestExtData::Unauthenticated {
                     redirect_strategy: self.redirect_strategy.clone(),
                 }),
