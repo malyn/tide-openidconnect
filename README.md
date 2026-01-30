@@ -1,11 +1,10 @@
 tide-openidconnect
 ==================
 
-[![Build Status](https://github.com/malyn/tide-openidconnect/actions/workflows/main.yml/badge.svg)](https://github.com/malyn/tide-openidconnect/actions/workflows/main.yml)
 [![Latest version](https://img.shields.io/crates/v/tide-openidconnect.svg)](https://crates.io/crates/tide-openidconnect)
 [![Documentation](https://docs.rs/tide-openidconnect/badge.svg)](https://docs.rs/tide-openidconnect)
 ![License](https://img.shields.io/crates/l/tide-openidconnect.svg)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](https://github.com/malyn/tide-openidconnect/blob/main/CODE_OF_CONDUCT.md) 
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](https://codeberg.org/malyn/tide-openidconnect/raw/branch/main/CODE_OF_CONDUCT.md)
 
 OpenID Connect middleware for Tide.
 
@@ -27,7 +26,6 @@ token exchanges, and make the results available to Tide requests.
 Connect-compatible identity providers
 
 - [Documentation](https://docs.rs/tide-openidconnect)
-- [Release notes](https://github.com/malyn/tide-openidconnect/releases)
 
 ## Usage
 
@@ -89,7 +87,7 @@ async fn main() -> tide::Result<()> {
 ```
 
 See more examples in the
-[examples](https://github.com/malyn/tide-openidconnect/tree/main/examples)
+[examples](https://codeberg.org/malyn/tide-openidconnect/src/branch/main/examples)
 directory.
 
 ## Login Flow
@@ -185,15 +183,15 @@ malicious attacks.
 ## Conduct
 
 This project adheres to the [Contributor Covenant Code of
-Conduct](https://github.com/malyn/tide-openidconnect/blob/main/CODE_OF_CONDUCT.md).
+Conduct](https://codeberg.org/malyn/tide-openidconnect/raw/branch/main/CODE_OF_CONDUCT.md).
 This describes the minimum behavior expected from all contributors.
 
 ## License
 
 Licensed under either of
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](https://github.com/malyn/tide-openidconnect/blob/main/LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license ([LICENSE-MIT](https://github.com/malyn/tide-openidconnect/blob/main/LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+- Apache License, Version 2.0 ([LICENSE-APACHE](https://codeberg.org/malyn/tide-openidconnect/raw/branch/main/LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](https://codeberg.org/malyn/tide-openidconnect/raw/branch/main/LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
 
 at your option.
 

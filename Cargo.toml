@@ -8,8 +8,8 @@ categories = ["authentication", "web-programming", "web-programming::http-server
 edition = "2018"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/malyn/tide-openidconnect"
-exclude = [ ".editorconfig", ".gitattributes", ".github", ".gitignore" ]
+repository = "https://codeberg.org/malyn/tide-openidconnect"
+exclude = [".editorconfig", ".gitattributes", ".github", ".gitignore"]
 
 [dependencies]
 futures-lite = "1.11"
