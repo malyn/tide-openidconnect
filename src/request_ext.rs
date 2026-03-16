@@ -1,3 +1,5 @@
+use openidconnect::core::CoreGenderClaim;
+use openidconnect::StandardClaims;
 use std::sync::Arc;
 
 use crate::redirect_strategy::RedirectStrategy;
@@ -21,6 +23,9 @@ pub trait OpenIdConnectRequestExt {
     /// Gets the Identity Provider-specific user id of the authenticated
     /// user, or `None` if the session has not been authenticated.
     fn user_id(&self) -> Option<String>;
+
+    /// Gets the StandardClaims provided by the user_info endpoint
+    fn user_info(&self) -> Option<StandardClaims<CoreGenderClaim>>;
 }
 
 impl<State> OpenIdConnectRequestExt for Request<State>
@@ -56,6 +61,13 @@ where
             _ => None,
         }
     }
+
+    fn user_info(&self) -> Option<StandardClaims<CoreGenderClaim>> {
+        match self.auth_state() {
+            OpenIdConnectRequestExtData::Authenticated { user_info, .. } => Some(user_info.clone()),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) enum OpenIdConnectRequestExtData {
@@ -66,6 +78,7 @@ pub(crate) enum OpenIdConnectRequestExtData {
         access_token: String,
         scopes: Vec<String>,
         user_id: String,
+        user_info: StandardClaims<CoreGenderClaim>,
     },
 }
 

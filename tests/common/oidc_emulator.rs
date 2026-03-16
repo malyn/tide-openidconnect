@@ -206,7 +206,7 @@ impl OpenIdConnectEmulator {
         S: AsRef<str>,
     {
         // Generate a random authorization_code.
-        let authorization_code = Uuid::new_v4().to_hyphenated();
+        let authorization_code = Uuid::new_v4().hyphenated();
 
         // Create the token and add it to the emulator.
         let mut tokens = self.tokens.lock().await;
